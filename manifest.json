@@ -1,14 +1,14 @@
 {
   "schemaVersion": 1,
-  "id": "vornashev.remote-hosts",
-  "name": "Remote Hosts",
-  "version": "0.7.0",
+  "id": "vornashev.hostdeck",
+  "name": "HostDeck",
+  "version": "0.8.0",
   "author": "vornashev",
-  "description": "Remote host catalog with SSH, SFTP, VS Code, and AI CLI launchers",
+  "description": "Remote host catalog with SSH, SFTP, AI CLI launchers, and host scripts",
   "kinds": ["bar-widget"],
   "entryPoints": {"barWidget": "BarWidget.qml"},
   "barWidget": {
-    "displayName": "Remote Hosts",
+    "displayName": "HostDeck",
     "category": "Network",
     "allowMultiple": false,
     "defaultSection": "right"

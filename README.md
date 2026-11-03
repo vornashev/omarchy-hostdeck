@@ -1,25 +1,24 @@
-# Omarchy Remote Hosts
+# HostDeck for Omarchy
 
 [Russian version](README.ru.md)
 
-An Omarchy bar plugin for managing remote development hosts. It combines SSH,
-SFTP, VS Code Remote-SSH, strict host-key verification, and interactive AI CLI
-launchers in one native QML/Quickshell panel.
+HostDeck is an Omarchy bar plugin for managing remote development hosts. It
+combines SSH, SFTP, strict host-key verification, interactive AI CLI launchers,
+and host scripts in one native QML/Quickshell panel.
 
-Plugin ID: `vornashev.remote-hosts`
+Plugin ID: `vornashev.hostdeck`
 
 ## Features
 
-- Host catalog with groups, pins, notes, endpoint availability, and up to 100 hosts.
+- Host catalog with groups, pins, notes, service links, endpoint availability, and up to 100 hosts.
 - Two layouts from one panel: a narrow list with an action dock, and a wide
   list with a detail pane. **Auto** switches to wide when the screen leaves at
   least 760 px for the panel.
-- Search across name, address, group, and note; Enter connects to the best match.
+- Search across name, address, group, note, and links; Enter connects to the best match.
 - Latency uses theme colors only: neutral through 50 ms, accent from 51–99 ms,
   and urgent from 100 ms. Statuses refresh host by host with a progress line.
 - SSH in Ghostty, Kitty, Alacritty, or foot.
 - SFTP mounts through SSHFS and opens them in Nautilus.
-- Isolated VS Code Remote-SSH profiles without changing `~/.ssh/config`.
 - Per-host AI CLI selection and an optional project directory.
 - Explicitly saved per-host scripts, launched in a terminal over SSH on demand.
 - JSON import/export without passwords or claims that a saved secret exists.
@@ -51,7 +50,9 @@ requested remote-execution feature; review their content before launching.
 
 ## Panel and keyboard
 
-Opening the panel focuses the search field and restores the last selected host.
+Opening the panel focuses the host list and restores the last selected host,
+so action keys work immediately. Typing any other character, or `/`, moves to
+search; Esc in an empty search field returns to the list.
 Click or use ↑↓ to select a host; the dock (narrow) or detail pane (wide)
 follows the selection. Hover and keyboard cursor share one highlight.
 
@@ -62,17 +63,35 @@ follows the selection. Hover and keyboard cursor share one highlight.
 | Tab | Next group tab (narrow) or switch between list and detail (wide) |
 | Enter | SSH to the selected host or the best search match |
 | Space / `P` | Pin or unpin |
-| `F` / `C` / `Y` | Files (SFTP), VS Code, copy SSH endpoint |
-| `A` / `S` | AI CLI or scripts picker; `1`–`9` launch from it |
+| `F` / `C` | Files (SFTP), copy SSH endpoint |
+| `A` / `S` / `L` | AI CLI, scripts, or links: a picker in the dock where `1`–`9` launch (narrow), or the cursor jumps to that section of the detail pane (wide) |
+| `C` on a link (wide) | Copy that link's URL instead of the SSH endpoint |
 | `E` / `K` / `R` / Del | Edit, verify host key, retry the status check, delete |
 | Ctrl+Enter | Save the host form |
-| Esc | Close a picker or confirmation, clear search, then close the panel |
+| Esc | Close a picker or confirmation, clear search, leave search, then close the panel |
 
 Right-click a host for its context menu, double-click to connect. Deleting a
 host or an empty group is confirmed inline. A launch that needs a host key
 stops with a notification whose **Verify** action (`K`) opens the fingerprint
 review; after trusting the key, the launch continues. Pins are saved with the
 profile, while group tabs, collapse state, and selection are view state only.
+
+## Service links
+
+Each host can keep up to 16 links to the services it runs, such as dashboards,
+admin panels, or APIs. Add them in **Links** in the host editor; **Add link**
+starts with `http://<host address>:` so only the port and path remain. A name is
+optional; an empty name shows the URL's host and port.
+
+The detail pane (wide) shows links as cards: a click opens the URL in the
+default browser through `xdg-open`, and the copy button that appears on hover
+copies the URL with `wl-copy`. In the narrow layout, the **Links** chip or `L`
+opens a picker where `1`–`9` open a link.
+
+Only `http://` and `https://` URLs without spaces or control characters are
+accepted. URLs with a login or password (`user:pass@host`) are rejected,
+because links are displayed and copied verbatim. Links are exported together
+with notes; do not put tokens in a URL that you plan to export.
 
 ## Host scripts
 
@@ -96,7 +115,8 @@ source path cannot be recovered. Manually entered scripts remain editable.
 Changing a host's address, port, or login
 invalidates access to its old scripts; delete the host to remove them.
 
-Click a script (or pick it with `S` and a number) to open a terminal and run it remotely via SSH using
+Click a script (or pick it with `S` — then a number in the narrow dock, or
+Enter in the wide detail pane) to open a terminal and run it remotely via SSH using
 `sh -s` or `bash -s` according to a supported shebang (`#!/bin/sh`,
 `#!/usr/bin/env sh`, `#!/bin/bash`, `#!/usr/bin/env bash`). Its contents travel through stdin, never command-line arguments or
 environment variables. A verified host key is required and strict checking is
@@ -113,7 +133,6 @@ it or losing the connection can interrupt execution.
 - One supported terminal.
 - Optional: `secret-tool` and an unlocked Secret Service for passwords or saved key passphrases.
 - Optional: `sshfs`, FUSE 3, and Nautilus for SFTP.
-- Optional: VS Code with the official `ms-vscode-remote.remote-ssh` extension.
 - Optional: `wl-copy` for copying SSH endpoints. The copy is `login@host`, with ` -p port` appended for a non-default port.
 
 Remote AI CLIs must already be installed, authenticated, and available in the
@@ -122,23 +141,20 @@ remote user's login-shell `PATH`. The plugin does not install remote software.
 ## Installation
 
 ```bash
-git clone https://github.com/vornashev/omarchy-remote-hosts.git
-cd omarchy-remote-hosts
-
-PYTHONDONTWRITEBYTECODE=1 python3 -B -m unittest discover -s tests
-omarchy plugin validate "$PWD"
-scripts/qml-lint
-scripts/deploy-local
-
-omarchy plugin enable vornashev.remote-hosts
+omarchy plugin add https://github.com/vornashev/omarchy-hostdeck --enable
 # Optional:
-omarchy bar move vornashev.remote-hosts --section right
+omarchy bar move vornashev.hostdeck --section right
 ```
 
-`scripts/deploy-local` validates the source, copies it to
-`~/.config/omarchy/plugins/vornashev.remote-hosts`, sets the askpass executable bit,
-and rescans shell plugins. It does not install packages or edit
-`~/.ssh/config`.
+Update with `omarchy plugin update vornashev.hostdeck` and uninstall with
+`omarchy plugin remove vornashev.hostdeck`. Removing the plugin keeps your
+profiles and settings in the data directory described under
+[Stored data and upgrades](#stored-data-and-upgrades).
+
+Version 0.8 renamed the plugin from Remote Hosts (`vornashev.remote-hosts`) to
+HostDeck. To upgrade, remove the old plugin with
+`omarchy plugin remove vornashev.remote-hosts` and add HostDeck as above; your
+data and saved secrets move to the new namespace on first start.
 
 ## Bar icon
 
@@ -171,12 +187,12 @@ Open the catalog and select **Settings**:
 
 - **Language:** English or Russian. English is the default for a fresh install.
 - **Panel layout:** Auto, Compact (narrow), or Wide.
-- **Check pinned hosts:** Off, or a background check every 5–60 minutes.
+- **Check pinned hosts:** a − / + stepper over Off, 5, 15, 30, and 60 minutes.
 - **Default terminal:** Ghostty, Kitty, Alacritty, or foot.
 
-The saved terminal applies to new SSH and AI CLI windows on every host. Missing
-terminals cannot be selected, and there is no silent fallback. VS Code and SFTP
-remain separate actions. Language, layout, background check, and terminal settings are
+The saved terminal applies to new SSH and AI CLI windows on every host. A
+terminal that is not installed can be picked but blocks **Save**; there is no
+silent fallback. SFTP remains a separate action. Language, layout, background check, and terminal settings are
 machine-local, take effect after **Save**, and are excluded from profile
 import/export.
 
@@ -194,7 +210,7 @@ Disabling the option or deleting the host clears the matching passphrase after
 the profile change is safely published.
 
 Saved key passphrases are supplied only to terminal SSH, AI CLI SSH, and SFTP.
-VS Code Remote-SSH retains its own passphrase prompt and handling. Exports
+Exports
 always reset the saved-passphrase setting; new imported hosts start with it
 disabled, while replacement imports preserve the local authentication,
 key path, and setting.
@@ -202,9 +218,9 @@ key path, and setting.
 ## Screen-sharing privacy
 
 Use the eye button in the panel header to blur logins and addresses in host
-rows, the dock and detail pane, the editor, notifications, script previews,
+rows, the dock and detail pane, link URLs, the editor, notifications, script previews,
 import and export previews, and host-key review. Endpoint
-fields cannot be edited while hidden, and a host key cannot be trusted until
+and link URL fields cannot be edited while hidden, and a host key cannot be trusted until
 addresses are shown again.
 
 This is a transient visual mode for screen sharing, not cryptographic
@@ -218,18 +234,18 @@ shell process restarts; it is not saved to disk.
 Profiles and global settings are stored under:
 
 ```text
-$XDG_DATA_HOME/vornashev.remote-hosts/
+$XDG_DATA_HOME/vornashev.hostdeck/
 ```
 
-The default is `~/.local/share/vornashev.remote-hosts/`. The directory uses mode
+The default is `~/.local/share/vornashev.hostdeck/`. The directory uses mode
 0700; data files and the lock use 0600. Writes use a same-directory temporary
 file, `fsync`, and atomic replacement.
 
-On first start, version 0.7 safely moves a valid private data directory from
-either previous plugin namespace when the new directory does not exist. Unsafe
-permissions and symlinks fail closed. Password entries are migrated from
-previous Secret Service application attributes on first lookup, then the
-matching old entry is cleared.
+On first start, version 0.8 safely moves a valid private data directory from
+a previous plugin namespace (`vornashev.remote-hosts` or an older one) when the
+new directory does not exist. Unsafe permissions and symlinks fail closed.
+Passwords and SSH key passphrases are migrated from previous Secret Service
+application attributes on first lookup, then the matching old entry is cleared.
 
 Profile schema remains version 1:
 
@@ -268,10 +284,21 @@ fingerprint through an independent trusted channel before accepting it.
 ## Development
 
 ```bash
+git clone https://github.com/vornashev/omarchy-hostdeck.git
+cd omarchy-hostdeck
+
 PYTHONDONTWRITEBYTECODE=1 python3 -B -m unittest discover -s tests
 omarchy plugin validate "$PWD"
 scripts/qml-lint
+scripts/deploy-local
+omarchy plugin enable vornashev.hostdeck   # first time only
 ```
+
+`scripts/deploy-local` validates the source and replaces
+`~/.config/omarchy/plugins/vornashev.hostdeck` with the files git tracks
+(or would track), leaving out `AGENTS.md`, `scripts/`, and `tests/`. It sets the
+askpass executable bit, restarts the shell, and waits until it answers. It does
+not install packages or edit `~/.ssh/config`.
 
 Tests use synthetic endpoints, temporary directories, and fake external
 programs. They do not connect to real hosts or read real credentials, keys,

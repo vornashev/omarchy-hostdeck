@@ -23,17 +23,21 @@ import subprocess
 import sys
 import tempfile
 import time
+import urllib.parse
 import uuid
 from typing import Any
 
-APP = "vornashev.remote-hosts"
-LEGACY_APPS = ("tema.remote-hosts", "tema.remote-devices")
+APP = "vornashev.hostdeck"
+LEGACY_APPS = ("vornashev.remote-hosts", "tema.remote-hosts", "tema.remote-devices")
+# Key passphrases were introduced under the newest legacy namespace only.
+KEY_PASSPHRASE_LEGACY_APPS = LEGACY_APPS[:1]
 HERE = Path(__file__).resolve().parent
 MAX_BYTES = 1024 * 1024
 MAX_DEVICES = 100
 MAX_KEYSCAN_BYTES = 64 * 1024
 MAX_SCRIPTS = 32
 MAX_SCRIPT_BYTES = 16 * 1024
+MAX_LINKS = 16
 KEYSCAN_TYPES = "rsa,ecdsa,ed25519"
 KEY_ALGORITHMS = {"ssh-rsa", "ssh-ed25519", "ecdsa-sha2-nistp256", "ecdsa-sha2-nistp384", "ecdsa-sha2-nistp521"}
 DEFAULT_GROUP = "00000000-0000-4000-8000-000000000001"
@@ -60,9 +64,13 @@ LEGACY_LAUNCH_MODES = {"shell", "custom", *AI_COMMANDS}
 PANEL_LAYOUTS = ("auto", "compact", "wide")
 # Minutes between background checks of pinned hosts; 0 keeps them manual.
 WATCH_INTERVALS = (0, 5, 15, 30, 60)
+# VS Code Remote-SSH is parked until it is finished; launch requests for it are
+# refused. vscode_argv stays for the follow-up, together with Widget.qml's
+# vscodeEnabled flag.
+VSCODE_ENABLED = False
 DEVICE_FIELDS = {"id", "name", "host", "port", "login", "group", "note", "auth", "keyPath",
                  "saveKeyPassphrase", "client", "remoteFolder", "launchMode", "customExecutable",
-                 "agents", "agentFolder", "pinned"}
+                 "agents", "agentFolder", "pinned", "links"}
 
 
 class Error(Exception):
@@ -231,6 +239,10 @@ ENGLISH_MESSAGES = {
     "Скрипт с таким названием уже есть": "A script with this name already exists",
     "Скрипт сохранён": "Script saved",
     "Скрипт удалён": "Script deleted",
+    "Некорректные поля ссылки": "Invalid link fields",
+    "Ссылка: нужен адрес http:// или https:// без пробелов, логина и пароля":
+        "Link: an http:// or https:// address without spaces, login or password is required",
+    "Ссылки: не больше 16 и без повторов": "Links: at most 16, without duplicates",
     "SSH или проверенный host key недоступны": "SSH or a verified host key is unavailable",
     "Некорректные аргументы SSH": "Invalid SSH arguments",
     "Терминал не найден в PATH": "Terminal not found in PATH",
@@ -261,7 +273,7 @@ LABELS_EN = {
     "Рабочая папка AI": "AI working folder", "Группа": "Group", "Пароль": "Password",
     "Сохранённый пароль": "Saved password", "Парольная фраза ключа": "Key passphrase",
     "Сохранённая парольная фраза ключа": "Saved key passphrase", "Файл импорта": "Import file",
-    "Название скрипта": "Script name",
+    "Название скрипта": "Script name", "Ссылка": "Link", "Название ссылки": "Link name",
 }
 
 
@@ -346,6 +358,21 @@ def executable_name(value):
     return value
 
 
+def link(value):
+    require(isinstance(value, dict) and set(value) == {"name", "url"}, "Некорректные поля ссылки")
+    url = text(value["url"], "Ссылка", 2048)
+    message = "Ссылка: нужен адрес http:// или https:// без пробелов, логина и пароля"
+    require(not any(c.isspace() for c in url), message)
+    try:
+        parts = urllib.parse.urlsplit(url)
+        parts.port  # raises on a malformed port
+    except ValueError:
+        raise Error(message) from None
+    # Credentials in a URL are secrets; the panel shows and copies links verbatim.
+    require(parts.scheme in ("http", "https") and parts.hostname and "@" not in parts.netloc, message)
+    return {"name": text(value["name"], "Название ссылки", 60, empty=True), "url": url}
+
+
 def device(value):
     require(isinstance(value, dict) and not (set(value) - DEVICE_FIELDS), "Неизвестные поля устройства (секреты запрещены)")
     d = dict(value)
@@ -375,6 +402,10 @@ def device(value):
     d["agentFolder"] = safe_path(d.get("agentFolder", ""), "Рабочая папка AI")
     d["pinned"] = d.get("pinned", False)
     require(type(d["pinned"]) is bool, "Некорректный признак закрепления")
+    links = d.get("links", [])
+    require(isinstance(links, list) and len(links) <= MAX_LINKS, "Ссылки: не больше 16 и без повторов")
+    d["links"] = [link(item) for item in links]
+    require(len({item["url"] for item in d["links"]}) == len(d["links"]), "Ссылки: не больше 16 и без повторов")
     require(d["auth"] != "password" or not d["keyPath"], "Для пароля путь к ключу должен быть пустым")
     require(not d["saveKeyPassphrase"] or (d["auth"] == "agent" and d["keyPath"]),
             "Парольную фразу ключа можно сохранять только для явно указанного ключа")
@@ -442,7 +473,7 @@ def atomic_private_bytes(path, raw, overwrite=True):
     if path.exists() or path.is_symlink():
         check_file(path)
         require(overwrite, "Файл уже существует; выберите новое имя")
-    fd, temp = tempfile.mkstemp(prefix=".remote-hosts-", dir=path.parent)
+    fd, temp = tempfile.mkstemp(prefix=".hostdeck-", dir=path.parent)
     try:
         os.fchmod(fd, 0o600)
         with os.fdopen(fd, "wb") as out:
@@ -754,7 +785,7 @@ def secret_args(d, app=APP, *, kind="password"):
 def secret_run(operation, d, password=None, app=APP, *, kind="password"):
     argv = ["secret-tool", operation]
     if operation == "store":
-        label = "Omarchy remote host key passphrase" if kind == "key-passphrase" else "Omarchy remote host"
+        label = "HostDeck host key passphrase" if kind == "key-passphrase" else "HostDeck host"
         argv += [f"--label={label}"]
     argv += secret_args(d, app, kind=kind)
     try:
@@ -768,6 +799,7 @@ def secret(operation, d, password=None, *, kind="password"):
     require(shutil.which("secret-tool") is not None, "Secret Service: secret-tool не найден; пароль не сохранён")
     label = "Парольная фраза ключа" if kind == "key-passphrase" else "Пароль"
     saved_label = "Сохранённая парольная фраза ключа" if kind == "key-passphrase" else "Сохранённый пароль"
+    legacy_apps = KEY_PASSPHRASE_LEGACY_APPS if kind == "key-passphrase" else LEGACY_APPS
     if operation == "store":
         text(password, label, 4096)
         result = secret_run("store", d, password, kind=kind)
@@ -775,14 +807,13 @@ def secret(operation, d, password=None, *, kind="password"):
         return None
     if operation == "clear":
         succeeded = secret_run("clear", d, kind=kind).returncode == 0
-        if kind == "password":
-            for legacy_app in LEGACY_APPS:
-                succeeded = secret_run("clear", d, app=legacy_app, kind=kind).returncode == 0 or succeeded
+        for legacy_app in legacy_apps:
+            succeeded = secret_run("clear", d, app=legacy_app, kind=kind).returncode == 0 or succeeded
         require(succeeded, "Secret Service: операция не выполнена; разблокируйте хранилище")
         return None
     result = secret_run("lookup", d, kind=kind)
-    if kind == "password" and result.returncode == 1:
-        for legacy_app in LEGACY_APPS:
+    if result.returncode == 1:
+        for legacy_app in legacy_apps:
             legacy = secret_run("lookup", d, app=legacy_app, kind=kind)
             if legacy.returncode == 1:
                 result = legacy
@@ -872,6 +903,7 @@ def export_document(data, notes=False, paths=False):
         d["pinned"] = False  # pins are local view preferences, like collapsed groups
         if not notes:
             d["note"] = ""
+            d["links"] = []  # URLs may carry tokens, so they follow the notes choice
         if not paths:
             d["keyPath"] = ""
             d["remoteFolder"] = ""
@@ -1221,7 +1253,7 @@ def trust_host_keys(d, preview_keys, token, home=None):
 
     home = user_home() if home is None else Path(home)
     ssh_dir = ensure_ssh_directory(home)
-    lock_path = ssh_dir / ".vornashev.remote-hosts-known-hosts.lock"
+    lock_path = ssh_dir / ".vornashev.hostdeck-known-hosts.lock"
     lock_fd = os.open(lock_path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
     try:
         check_open_file(lock_fd, lock_path, private=True)
@@ -1599,11 +1631,11 @@ def askpass(prompt, env=None, store=None):
     require(env.get("SSH_ASKPASS_PROMPT", "") == "", "Запрос подтверждения запрещён")
     store = store or Store()
     with store.locked():
-        d = find_device(store.load(), env.get("REMOTE_HOSTS_PROFILE"))
-    endpoint_matches = env.get("REMOTE_HOSTS_ENDPOINT") == revision(list(endpoint(d)))
+        d = find_device(store.load(), env.get("HOSTDECK_PROFILE"))
+    endpoint_matches = env.get("HOSTDECK_ENDPOINT") == revision(list(endpoint(d)))
     password_auth = d["auth"] == "password"
     passphrase_auth = (d["auth"] == "agent" and d["saveKeyPassphrase"]
-                       and env.get("REMOTE_HOSTS_KEY") == revision(d["keyPath"]))
+                       and env.get("HOSTDECK_KEY") == revision(d["keyPath"]))
     require(endpoint_matches and (password_auth or passphrase_auth), "Профиль входа изменился")
     if password_auth:
         # OpenSSH password auth uses this literal prompt. No regex/fuzzy
@@ -1619,15 +1651,15 @@ def askpass(prompt, env=None, store=None):
 def ssh_environment(d):
     env = os.environ.copy()
     for name in ("SSH_ASKPASS", "SSH_ASKPASS_REQUIRE", "SSH_ASKPASS_PROMPT",
-                 "REMOTE_HOSTS_PROFILE", "REMOTE_HOSTS_ENDPOINT", "REMOTE_HOSTS_KEY"):
+                 "HOSTDECK_PROFILE", "HOSTDECK_ENDPOINT", "HOSTDECK_KEY"):
         env.pop(name, None)
     if d["auth"] == "password" or d["saveKeyPassphrase"]:
         require(shutil.which("secret-tool") is not None, "secret-tool не найден")
         env.update(SSH_ASKPASS=str(HERE / "askpass.py"), SSH_ASKPASS_REQUIRE="force",
-                   REMOTE_HOSTS_PROFILE=d["id"],
-                   REMOTE_HOSTS_ENDPOINT=revision(list(endpoint(d))), LC_ALL="C")
+                   HOSTDECK_PROFILE=d["id"],
+                   HOSTDECK_ENDPOINT=revision(list(endpoint(d))), LC_ALL="C")
         if d["saveKeyPassphrase"]:
-            env["REMOTE_HOSTS_KEY"] = revision(d["keyPath"])
+            env["HOSTDECK_KEY"] = revision(d["keyPath"])
     return env
 
 
@@ -1899,7 +1931,8 @@ def dispatch(req, store=None) -> dict[str, Any]:
             client = req.get("client") if op == "launch" else None
             if client is None:
                 client = store.load_settings()["defaultTerminal"]
-            require(isinstance(client, str) and (client in TERMINALS or client in ("sftp", "vscode")),
+            require(isinstance(client, str) and (client in TERMINALS or client == "sftp"
+                                                 or (client == "vscode" and VSCODE_ENABLED)),
                     "Неизвестный клиент")
             # Password askpass is password-only. Every terminal/client must
             # complete explicit fingerprint verification before first use.

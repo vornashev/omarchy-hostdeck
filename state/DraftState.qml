@@ -13,6 +13,7 @@ QtObject {
     property string login: ""
     property string group: ""
     property string note: ""
+    property var links: []
     property string auth: "agent"
     property string keyPath: ""
     property bool saveKeyPassphrase: false
@@ -34,6 +35,7 @@ QtObject {
         login = ""
         group = ""
         note = ""
+        links = []
         auth = "agent"
         keyPath = ""
         saveKeyPassphrase = false

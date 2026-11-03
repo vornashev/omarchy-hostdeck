@@ -36,7 +36,7 @@ class AskpassProcessTests(unittest.TestCase):
                 shutil.copy2(h.HERE / filename, plugin / filename)
             initial_files = sorted(p.name for p in plugin.iterdir())
             env = {"PATH": str(base), "XDG_DATA_HOME": str(base),
-                   "REMOTE_HOSTS_PROFILE": d["id"], "REMOTE_HOSTS_ENDPOINT": h.revision(list(h.endpoint(d)))}
+                   "HOSTDECK_PROFILE": d["id"], "HOSTDECK_ENDPOINT": h.revision(list(h.endpoint(d)))}
             command = [str(plugin / "askpass.py"), "tema@2001:db8::1's password: "]
             p = subprocess.run(command, env=env, capture_output=True, text=True, timeout=5)
             self.assertEqual(p.returncode, 0)
@@ -51,7 +51,7 @@ class AskpassProcessTests(unittest.TestCase):
                                     ("Are you sure you want to continue connecting (yes/no)?", {}),
                                     (command[1], {"SSH_ASKPASS_PROMPT": "confirm"}),
                                     ("tema@other.test's password: ", {}),
-                                    (command[1], {"REMOTE_HOSTS_ENDPOINT": "changed"})]:
+                                    (command[1], {"HOSTDECK_ENDPOINT": "changed"})]:
                 p = subprocess.run([command[0], prompt], env={**env, **changes}, capture_output=True, text=True, timeout=5)
                 self.assertEqual(p.returncode, 1)
                 self.assertEqual(p.stdout + p.stderr, "")
@@ -90,9 +90,9 @@ class AskpassProcessTests(unittest.TestCase):
             env = {
                 "PATH": str(base),
                 "XDG_DATA_HOME": str(base),
-                "REMOTE_HOSTS_PROFILE": d["id"],
-                "REMOTE_HOSTS_ENDPOINT": h.revision(list(h.endpoint(d))),
-                "REMOTE_HOSTS_KEY": h.revision(key_path),
+                "HOSTDECK_PROFILE": d["id"],
+                "HOSTDECK_ENDPOINT": h.revision(list(h.endpoint(d))),
+                "HOSTDECK_KEY": h.revision(key_path),
             }
             prompt = f"Enter passphrase for key '{key_path}': "
             command = [str(plugin / "askpass.py"), prompt]
@@ -109,8 +109,8 @@ class AskpassProcessTests(unittest.TestCase):
                 ("tema@2001:db8::1's password: ", {}),
                 ("Are you sure you want to continue connecting (yes/no)?", {}),
                 (prompt, {"SSH_ASKPASS_PROMPT": "confirm"}),
-                (prompt, {"REMOTE_HOSTS_ENDPOINT": "old"}),
-                (prompt, {"REMOTE_HOSTS_KEY": "old"}),
+                (prompt, {"HOSTDECK_ENDPOINT": "old"}),
+                (prompt, {"HOSTDECK_KEY": "old"}),
             ]
             for rejected_prompt, changes in rejected:
                 result = subprocess.run(

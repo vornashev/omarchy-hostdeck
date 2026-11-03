@@ -11,11 +11,15 @@ import "state" as State
 
 Ui.Panel {
     id: root
-    moduleName: "vornashev.remote-hosts"
-    ipcTarget: "vornashev.remote-hosts"
+    moduleName: "vornashev.hostdeck"
+    ipcTarget: "vornashev.hostdeck"
     implicitWidth: button.implicitWidth
     implicitHeight: button.implicitHeight
 
+    // VS Code Remote-SSH is parked until it is finished: every entry point
+    // checks this flag, and helper.py refuses the client while VSCODE_ENABLED
+    // is False. Flip both to bring it back.
+    readonly property bool vscodeEnabled: false
     property var profiles: ({version: 1, groups: [], devices: []})
     property var statuses: ({})
     property var sftpStates: ({})
@@ -53,6 +57,7 @@ Ui.Panel {
         return globalConfig.defaultTerminal
     }
     readonly property bool addressesHidden: State.PrivacyState.addressesHidden
+    readonly property int maxLinks: 16  // helper.MAX_LINKS
     readonly property var agentLabels: ({
         claude: "Claude", codex: "Codex", pi: "Pi", opencode: "OpenCode", gemini: "Gemini",
         aider: "Aider", goose: "Goose", amp: "Amp", copilot: "Copilot", qwen: "Qwen"
@@ -179,8 +184,7 @@ Ui.Panel {
         hostDeleteId = ""
         menuHostId = ""
         Qt.callLater(function() {
-            if (root.page === "list") root.focusSearch()
-            else if (root.page !== "device" && root.page !== "hostkey") pageFrame.forceActiveFocus()
+            if (root.page !== "device" && root.page !== "hostkey") keySink.forceActiveFocus()
         })
     }
     onCurrentIdChanged: {
@@ -195,7 +199,7 @@ Ui.Panel {
         hostField.deselect()
         loginField.deselect()
         portField.deselect()
-        if (endpointFocused) pageFrame.forceActiveFocus()
+        if (endpointFocused) keySink.forceActiveFocus()
     }
 
     // --- helpers --------------------------------------------------------------
@@ -259,6 +263,7 @@ Ui.Panel {
         if ((d.login + "@" + d.host).toLowerCase().indexOf(q) >= 0) return 2
         if (groupName(d.group).toLowerCase().indexOf(q) >= 0) return 3
         if (d.note.toLowerCase().indexOf(q) >= 0) return 4
+        if ((d.links || []).some(function(l) { return (l.name + " " + l.url).toLowerCase().indexOf(q) >= 0 })) return 5
         return -1
     }
     function computeRows() {
@@ -394,6 +399,21 @@ Ui.Panel {
         Quickshell.execDetached(["wl-copy", copied])
         toast("info", t("SSH endpoint copied"), copied, "", d.id)
     }
+    function hostLinks(d) {
+        return d && d.links ? d.links : []
+    }
+    // Saved name, else host[:port] of the URL; the helper guarantees http(s).
+    function linkLabel(link) {
+        return link.name || link.url.replace(/^https?:\/\//, "").split(/[\/?#]/)[0]
+    }
+    function openLink(link) {
+        if (link) Quickshell.execDetached(["xdg-open", link.url])
+    }
+    function copyLink(link) {
+        if (!link) return
+        Quickshell.execDetached(["wl-copy", link.url])
+        toast("info", t("Link copied"), linkLabel(link))
+    }
     function statusAgeSeconds(d) {
         var s = matchingStatus(d)
         if (!s) return Infinity
@@ -519,7 +539,7 @@ Ui.Panel {
     function launchDevice(id, client) {
         var d = deviceById(id)
         if (busy || !d) return
-        if (client === "vscode" && d.auth !== "agent") return
+        if (client === "vscode" && (!vscodeEnabled || d.auth !== "agent")) return
         clearPendingLaunch()
         pendingLaunchClient = client || ""
         var title = client === "sftp" ? t("Mounting SFTP…") : client === "vscode" ? t("Opening VS Code…")
@@ -603,7 +623,7 @@ Ui.Panel {
         hostDeleteId = id
         dockMode = "delete"
         menuHostId = ""
-        pageFrame.forceActiveFocus()
+        keySink.forceActiveFocus()
     }
     function confirmHostDelete() {
         var id = hostDeleteId
@@ -632,7 +652,7 @@ Ui.Panel {
         menuX = x
         menuY = y
         menuIndex = 0
-        pageFrame.forceActiveFocus()
+        keySink.forceActiveFocus()
     }
     function selectByDevice(d) {
         for (var i = 0; i < rows.length; i++) if (rows[i].id === d.id) {
@@ -648,12 +668,13 @@ Ui.Panel {
         var items = []
         if (menuFull) {
             items.push({id: "ssh", icon: "󰆍", label: "SSH", key: "↵"})
-            items.push({id: "files", icon: "󰉋", label: t("Files"), key: "F", enabled: mount !== "foreign"})
-            items.push({id: "vscode", icon: "󰨞", label: "VS Code", key: "C", enabled: d.auth === "agent", separator: true})
+            items.push({id: "files", icon: "󰉋", label: t("Files"), key: "F", enabled: mount !== "foreign", separator: !vscodeEnabled})
+            if (vscodeEnabled)
+                items.push({id: "vscode", icon: "󰨞", label: "VS Code", key: "V", enabled: d.auth === "agent", separator: true})
         }
         items.push({id: "edit", icon: "󰏫", label: t("Edit host"), key: "E"})
         items.push({id: "verify", icon: "󰒃", label: t("Verify host key"), key: "K"})
-        items.push({id: "copy", icon: "󰆏", label: t("Copy SSH endpoint"), key: "Y"})
+        items.push({id: "copy", icon: "󰆏", label: t("Copy SSH endpoint"), key: "C"})
         items.push({id: "pin", icon: d.pinned ? "󰤰" : "󰐃", label: d.pinned ? t("Unpin") : t("Pin to top"), key: "P", separator: !menuFull})
         if (!menuFull)
             items.push({id: "unmount", icon: "󰅖", label: t("Disconnect SFTP"), key: mount === "mounted" ? "" : t("not mounted"),
@@ -684,11 +705,13 @@ Ui.Panel {
     function detailTargets() {
         var d = current
         if (!d) return []
-        var list = ["ssh", "files", "vscode"]
+        var list = vscodeEnabled ? ["ssh", "files", "vscode"] : ["ssh", "files"]
         var agents = d.agents || []
         for (var i = 0; i < agents.length; i++) list.push("agent:" + agents[i])
         var entries = hostScripts(d)
         for (var j = 0; j < entries.length; j++) list.push("script:" + entries[j].id)
+        var links = hostLinks(d)
+        for (var k = 0; k < links.length; k++) list.push("link:" + k)
         return list
     }
     function detailTargetIndex(target) {
@@ -701,7 +724,8 @@ Ui.Panel {
         else if (target.indexOf("script:") === 0) {
             var entry = hostScripts(d).filter(function(s) { return "script:" + s.id === target })[0]
             if (entry) launchScript(d.id, entry)
-        } else runAction(target, d)
+        } else if (target.indexOf("link:") === 0) openLink(hostLinks(d)[Number(target.slice(5))])
+        else runAction(target, d)
     }
     function jumpDetail(prefix) {
         var targets = detailTargets()
@@ -717,9 +741,16 @@ Ui.Panel {
         var index = Math.max(0, Math.min(targets.length - 1, detailCursor))
         var target = targets[index]
         var tile = index < 3
+        var linkAt = target.indexOf("link:") === 0 ? Number(target.slice(5)) : -1
+        var firstLink = targets.indexOf("link:0")
         if (tile && dx !== 0) index = Math.max(0, Math.min(2, index + dx))
         else if (tile && dy > 0) index = Math.min(targets.length - 1, 3)
-        else if (!tile && dx !== 0) {
+        else if (linkAt >= 0) {
+            // Link cards sit in a two-column grid below agents and scripts.
+            var next = linkAt + dx + 2 * dy
+            if (next >= 0 && next < hostLinks(current).length) index = firstLink + next
+            else if (dy < 0 && linkAt < 2) index = Math.max(0, firstLink - 1)
+        } else if (!tile && dx !== 0) {
             var agents = targets.filter(function(x) { return x.indexOf("agent:") === 0 })
             var scriptsList = targets.filter(function(x) { return x.indexOf("script:") === 0 })
             var isAgent = target.indexOf("agent:") === 0
@@ -732,6 +763,7 @@ Ui.Panel {
             var at = group.indexOf(target) + dy
             if (at < 0) index = 0
             else if (at < group.length) index = targets.indexOf(group[at])
+            else if (firstLink >= 0) index = firstLink
         }
         detailCursor = index
     }
@@ -747,7 +779,7 @@ Ui.Panel {
         confirmKind = kind
         confirmId = id
         deleteConfirm.selectedIndex = 0
-        pageFrame.forceActiveFocus()
+        keySink.forceActiveFocus()
     }
     function showList() {
         clearPendingLaunch()
@@ -838,7 +870,7 @@ Ui.Panel {
         if (!target || !target.visible) target = nameField
         Qt.callLater(function() {
             if (root.addressesHidden && (target === hostField || target === loginField || target === portField)) {
-                pageFrame.forceActiveFocus()
+                keySink.forceActiveFocus()
                 return
             }
             if (root.opened && root.page === "device" && target && target.visible) {
@@ -871,6 +903,7 @@ Ui.Panel {
         State.DraftState.group = d ? d.group : (groupFilter !== "" && groupById(groupFilter) ? groupFilter
                                                  : profiles.groups.length ? profiles.groups[0].id : "")
         State.DraftState.note = d ? d.note : ""
+        State.DraftState.links = hostLinks(d).map(function(l) { return {name: l.name, url: l.url} })
         State.DraftState.auth = d ? d.auth : "agent"
         State.DraftState.keyPath = d ? d.keyPath : ""
         State.DraftState.saveKeyPassphrase = d ? (d.saveKeyPassphrase || false) : false
@@ -896,6 +929,17 @@ Ui.Panel {
         State.DraftState.password = ""
         State.DraftState.passphrase = ""
         if (v !== "agent") State.DraftState.saveKeyPassphrase = false
+    }
+    function addDraftLink() {
+        var host = hostField.text.trim()
+        var list = State.DraftState.links.slice()
+        list.push({name: "", url: host ? "http://" + (host.indexOf(":") >= 0 ? "[" + host + "]" : host) + ":" : ""})
+        State.DraftState.links = list
+    }
+    function removeDraftLink(index) {
+        var list = State.DraftState.links.slice()
+        list.splice(index, 1)
+        State.DraftState.links = list
     }
     function toggleDraftAgent(agent) {
         var list = State.DraftState.agents.slice()
@@ -942,7 +986,9 @@ Ui.Panel {
             saveKeyPassphrase: auth === "agent" && State.DraftState.saveKeyPassphrase,
             client: State.DraftState.client || "ghostty", launchMode: "shell", customExecutable: "",
             agents: State.DraftState.agents, agentFolder: agentFolderField.text,
-            remoteFolder: folderField.text, pinned: State.DraftState.pinned
+            remoteFolder: folderField.text, pinned: State.DraftState.pinned,
+            links: State.DraftState.links.map(function(l) { return {name: l.name.trim(), url: l.url.trim()} })
+                                         .filter(function(l) { return l.url !== "" })
         }, password: auth === "password" ? passwordField.text : ""}
         if (State.DraftState.saveKeyPassphrase) payload.passphrase = passphraseField.text
         call(payload)
@@ -1009,6 +1055,13 @@ Ui.Panel {
         if (s.ssh === "dns-error" || s.ssh === "error" || s.ping === "error") return "error"
         return "offline"
     }
+    // Dot shown in lists: SSH answering without a ping reply stays reachable,
+    // but the missing ping is flagged in urgent like the design's "no response".
+    function dotKind(d) {
+        var kind = statusKind(d)
+        var s = matchingStatus(d)
+        return kind === "online" && s && s.ping !== "ok" ? "offline" : kind
+    }
     function unreachable(d) {
         var kind = statusKind(d)
         return kind === "offline" || kind === "error" || kind === "degraded"
@@ -1031,7 +1084,7 @@ Ui.Panel {
         if (kind === "offline" || kind === "error") return {text: t("offline"), color: Color.urgent}
         if (s && s.ms !== null && s.ms !== undefined) return {text: Math.round(s.ms) + " ms", color: latencyColor(s.ms)}
         if (kind === "degraded") return {text: t("SSH closed"), color: Color.accent}
-        if (kind === "online") return {text: t("open"), color: secondaryText}
+        if (kind === "online") return {text: t("no response"), color: Color.urgent}
         return {text: query.trim() !== "" ? t("not checked") : "—", color: faintText}
     }
     function ageText(seconds) {
@@ -1096,7 +1149,7 @@ Ui.Panel {
     // Hover card content. Only host names appear, never user@host, so the
     // card is safe while the screen is shared.
     function hoverModel() {
-        if (!loaded) return {pager: "", title: t("Remote Hosts"), subtitle: "", lines: [], footer: []}
+        if (!loaded) return {pager: "", title: t("HostDeck"), subtitle: "", lines: [], footer: []}
         var d = tooltipPage >= 0 ? pinnedDevices[tooltipPage] : null
         if (d) {
             var facts = [t("group: %1").arg(groupName(d.group))]
@@ -1121,7 +1174,7 @@ Ui.Panel {
         var age = checking ? t("checking…") : relativeAge(isFinite(newest) ? Math.max(0, (clockMs - newest) / 1000) : Infinity)
         var footer = [age + " · " + t("middle-click to refresh")]
         if (pinnedDevices.length > 0) footer.push(t("scroll for pinned hosts"))
-        return {pager: "", title: t("Remote Hosts"), lines: lines, footer: footer,
+        return {pager: "", title: t("HostDeck"), lines: lines, footer: footer,
                 subtitle: t("%1 hosts · %2 pinned").arg(profiles.devices.length).arg(pinnedDevices.length)}
     }
     function scrollTooltip(delta) {
@@ -1151,8 +1204,9 @@ Ui.Panel {
             var s = root.matchingStatus(d)
             var trailing = kind === "pending" ? root.t("checking…")
                          : root.unreachable(d) ? (kind === "degraded" ? root.t("SSH closed") : root.t("unreachable"))
-                         : mounted ? "SFTP" : s && s.ms !== null && s.ms !== undefined ? Math.round(s.ms) + " ms" : ""
-            items.push({id: "host", deviceId: d.id, label: d.name, key: trailing, kind: kind, mounted: mounted,
+                         : mounted ? "SFTP" : s && s.ms !== null && s.ms !== undefined ? Math.round(s.ms) + " ms"
+                         : kind === "online" ? root.t("no response") : ""
+            items.push({id: "host", deviceId: d.id, label: d.name, key: trailing, kind: root.dotKind(d), mounted: mounted,
                         dim: root.unreachable(d), enabled: !root.busy})
         })
         if (items.length > 0) items[items.length - 1].separator = true
@@ -1264,18 +1318,19 @@ Ui.Panel {
         if (key === Qt.Key_Escape) {
             if (dockMode !== "") dockMode = ""
             else if (detailZone) detailZone = false
-            else if (query !== "") { query = ""; focusSearch() }
+            else if (query !== "") query = ""
             else close()
             return true
         }
-        if (dockMode === "ai" || dockMode === "scripts") {
-            var count = dockMode === "ai" ? (d ? d.agents.length : 0) : hostScripts(d).length
+        if (dockMode === "ai" || dockMode === "scripts" || dockMode === "links") {
+            var count = dockMode === "ai" ? (d ? d.agents.length : 0) : dockMode === "links" ? hostLinks(d).length : hostScripts(d).length
             if (key === Qt.Key_Down) { dockCursor = Math.min(count - 1, dockCursor + 1); return true }
             if (key === Qt.Key_Up) { dockCursor = Math.max(0, dockCursor - 1); return true }
             var digit = text >= "1" && text <= "9" ? Number(text) - 1 : -1
             if (key === Qt.Key_Return || key === Qt.Key_Enter || (digit >= 0 && digit < count)) {
                 var index = digit >= 0 ? digit : dockCursor
                 if (dockMode === "ai") launchAgent(d.id, d.agents[index])
+                else if (dockMode === "links") openLink(hostLinks(d)[index])
                 else launchScript(d.id, hostScripts(d)[index])
                 dockMode = ""
                 return true
@@ -1305,9 +1360,14 @@ Ui.Panel {
         if (key === Qt.Key_Space) { togglePin(d); return true }
         if (key === Qt.Key_Delete) { requestHostDelete(d.id); return true }
         var letter = text.toLowerCase()
-        var actions = {f: "files", c: "vscode", y: "copy", e: "edit", k: "verify", p: "pin", r: "retry"}
+        var actions = {f: "files", c: "copy", v: "vscode", e: "edit", k: "verify", p: "pin", r: "retry"}
+        if (!vscodeEnabled) delete actions.v
         if (letter === "k" && toasts.some(function(x) { return x.action === "verify" })) {
             toastAction(toasts.filter(function(x) { return x.action === "verify" }).pop())
+            return true
+        }
+        if (letter === "c" && wide && detailZone && String(detailTargets()[detailCursor]).indexOf("link:") === 0) {
+            copyLink(hostLinks(d)[Number(detailTargets()[detailCursor].slice(5))])
             return true
         }
         if (actions[letter]) { runAction(actions[letter], d); return true }
@@ -1319,6 +1379,11 @@ Ui.Panel {
         if (letter === "s") {
             if (wide) jumpDetail("script:")
             else { dockMode = dockMode === "scripts" ? "" : "scripts"; dockCursor = 0 }
+            return true
+        }
+        if (letter === "l") {
+            if (wide) jumpDetail("link:")
+            else if (hostLinks(d).length) { dockMode = dockMode === "links" ? "" : "links"; dockCursor = 0 }
             return true
         }
         if (text !== "" && text.trim() !== "") { typeIntoSearch(text); return true }
@@ -1342,7 +1407,7 @@ Ui.Panel {
             call({op: "list"})
         } else if (page === "list") {
             refresh()
-            focusSearch()
+            keySink.forceActiveFocus()
         } else if (page === "settings") {
             openSettings()
         }
@@ -1599,7 +1664,7 @@ Ui.Panel {
         anchors.fill: parent
         bar: root.bar
         iconComponent: Component {
-            RemoteHostsIcon {
+            HostDeckIcon {
                 color: button.active && button.useActiveColor ? button.activeColor : button.foreground
                 alertColor: Color.urgent
                 mode: root.barMode
@@ -1838,7 +1903,7 @@ Ui.Panel {
         open: root.opened
         focusTarget: root.page === "device" && State.DraftState.active
                      ? root.focusItem(State.DraftState.focusKey)
-                     : root.page === "list" ? searchBox.field : pageFrame
+                     : keySink
         contentWidth: panel.fittedContentWidth(Style.space(root.wide ? 980 : 460))
         contentHeight: panel.fittedContentHeight(Style.space(root.wide ? 640 : 700))
         FocusScope {
@@ -1846,6 +1911,9 @@ Ui.Panel {
             anchors.fill: parent
             // Escape/outside click preserves the draft; leaving the editor is explicit.
             Keys.onPressed: function(event) { if (root.handleKey(event)) event.accepted = true }
+            // Focusing the scope itself would restore its last focused child
+            // (often the search field); this item takes page-level focus.
+            Item { id: keySink }
 
             RowLayout {
                 anchors.fill: parent
@@ -1868,7 +1936,7 @@ Ui.Panel {
                         Layout.fillWidth: true
                         spacing: Style.space(6)
                         Label {
-                            text: root.t("Remote Hosts")
+                            text: root.t("HostDeck")
                             font.bold: true
                             font.pixelSize: Style.font.heading
                             wrapMode: Text.NoWrap
@@ -1924,8 +1992,10 @@ Ui.Panel {
                             }
                             Item { Layout.fillWidth: true }
                             IconAction {
-                                iconText: "󰐕"
+                                iconText: "󰘮"
                                 size: Style.space(24)
+                                // Centre on the 30 px header icons above.
+                                Layout.rightMargin: Style.space(3)
                                 tooltipText: root.t("Groups")
                                 onClicked: root.page = "groups"
                             }
@@ -1942,7 +2012,7 @@ Ui.Panel {
                                 color: root.matchCount() === 0 ? Color.urgent : Color.foreground
                                 wrapMode: Text.NoWrap
                             }
-                            Caption { text: root.t("in name · address · group · note"); wrapMode: Text.NoWrap; elide: Text.ElideRight }
+                            Caption { text: root.t("in name · address · group · note · link"); wrapMode: Text.NoWrap; elide: Text.ElideRight }
                             Caption { Layout.fillWidth: false; visible: !root.wide; text: root.t("Esc clears"); wrapMode: Text.NoWrap }
                         }
                         Rule { visible: !root.wide || root.query.trim() !== "" }
@@ -1954,7 +2024,7 @@ Ui.Panel {
                         Layout.fillWidth: true
                         Layout.fillHeight: true
                         spacing: Style.space(2)
-                        opacity: !root.wide && (root.dockMode === "ai" || root.dockMode === "scripts") ? 0.6 : 1
+                        opacity: !root.wide && (root.dockMode === "ai" || root.dockMode === "scripts" || root.dockMode === "links") ? 0.6 : 1
                         DraftRow {
                             visible: root.wide && State.DraftState.active && State.DraftState.editId === ""
                         }
@@ -1972,6 +2042,9 @@ Ui.Panel {
                                     collapsible: sectionBlock.modelData.group === true
                                     collapsed: root.collapsedGroups[sectionBlock.modelData.key] === true
                                     onToggled: root.toggleGroupCollapsed(sectionBlock.modelData.key)
+                                    actionIcon: sectionBlock.modelData.key === "all" ? "󰐕" : ""
+                                    actionTooltip: root.t("New host")
+                                    onActionClicked: root.editDevice(null)
                                 }
                                 Repeater {
                                     model: sectionBlock.modelData.rows
@@ -2028,7 +2101,8 @@ Ui.Panel {
                             Layout.topMargin: Style.space(root.wide ? 120 : 80)
                             iconText: "󰒋"
                             title: root.wide ? "" : root.t("Add your first host")
-                            body: root.wide ? root.t("No hosts yet") : root.t("A server, NAS or another computer. Once added you get SSH, Files, VS Code, AI CLI and scripts here in one click.")
+                            body: root.wide ? root.t("No hosts yet") : (root.vscodeEnabled ? root.t("A server, NAS or another computer. Once added you get SSH, Files, VS Code, AI CLI and scripts here in one click.")
+                                                       : root.t("A server, NAS or another computer. Once added you get SSH, Files, AI CLI and scripts here in one click."))
                             RowLayout {
                                 visible: !root.wide
                                 Layout.alignment: Qt.AlignHCenter
@@ -2111,16 +2185,12 @@ Ui.Panel {
                             id: formScroll
                             Layout.fillWidth: true
                             Layout.fillHeight: true
-                            GridLayout {
+                            ColumnLayout {
                                 Layout.fillWidth: true
-                                columns: root.wide ? 2 : 1
-                                columnSpacing: Style.space(28)
-                                rowSpacing: Style.space(16)
+                                spacing: Style.space(16)
                                 enabled: !root.busy
                                 ColumnLayout {
                                     Layout.fillWidth: true
-                                    Layout.preferredWidth: 1
-                                    Layout.alignment: Qt.AlignTop
                                     spacing: Style.space(10)
                                     Rule { title: root.t("Connection") }
                                     RowLayout {
@@ -2256,7 +2326,7 @@ Ui.Panel {
                                             checked: State.DraftState.saveKeyPassphrase
                                             enabled: keyField.text !== ""
                                             text: root.t("Save key passphrase")
-                                            detail: root.t("Auto-fill applies to terminal, AI CLI, and SFTP, not VS Code.")
+                                            detail: root.t(root.vscodeEnabled ? "Auto-fill applies to terminal, AI CLI, and SFTP, not VS Code." : "Auto-fill applies to terminal, AI CLI, and SFTP.")
                                             onToggled: {
                                                 State.DraftState.saveKeyPassphrase = !State.DraftState.saveKeyPassphrase
                                                 if (!State.DraftState.saveKeyPassphrase) {
@@ -2288,8 +2358,6 @@ Ui.Panel {
                                 }
                                 ColumnLayout {
                                     Layout.fillWidth: true
-                                    Layout.preferredWidth: 1
-                                    Layout.alignment: Qt.AlignTop
                                     spacing: Style.space(10)
                                     Rule { title: "AI CLI"; trailing: root.t("%1 of %2").arg(State.DraftState.agents.length).arg(Object.keys(root.agentLabels).length) }
                                     Flow {
@@ -2356,9 +2424,62 @@ Ui.Panel {
                                         bordered: true
                                         onClicked: root.editScript(root.editId, null)
                                     }
+                                    Rule { title: root.t("Links"); trailing: State.DraftState.links.length + " / " + root.maxLinks; Layout.topMargin: Style.space(6) }
+                                    Caption {
+                                        visible: State.DraftState.links.length === 0
+                                        text: root.t("Quick access to services on this host: dashboards, admin panels, APIs.")
+                                    }
+                                    Repeater {
+                                        model: State.DraftState.links
+                                        RowLayout {
+                                            id: formLinkRow
+                                            required property var modelData
+                                            required property int index
+                                            Layout.fillWidth: true
+                                            spacing: Style.space(6)
+                                            // Edits write into the draft entry in place so the model is not
+                                            // rebuilt (and focus not lost) on every keystroke.
+                                            Field {
+                                                Layout.preferredWidth: 1
+                                                text: formLinkRow.modelData.name
+                                                placeholderText: root.t("Name")
+                                                maximumLength: 60
+                                                onTextChanged: if (State.DraftState.active) State.DraftState.links[formLinkRow.index].name = text
+                                            }
+                                            Field {
+                                                id: linkUrlField
+                                                Layout.preferredWidth: 2
+                                                text: formLinkRow.modelData.url
+                                                placeholderText: "https://host:3000"
+                                                maximumLength: 2048
+                                                onTextChanged: if (State.DraftState.active) State.DraftState.links[formLinkRow.index].url = text
+                                                enabled: !root.addressesHidden
+                                                layer.enabled: root.addressesHidden && visible
+                                                layer.effect: PrivacyBlur {}
+                                                Component.onCompleted: if (formLinkRow.index === State.DraftState.links.length - 1 && formLinkRow.modelData.name === "" && /:$/.test(text)) {
+                                                    forceActiveFocus()
+                                                    cursorPosition = text.length
+                                                }
+                                            }
+                                            IconAction {
+                                                iconText: "󰆴"
+                                                hoverColor: Color.urgent
+                                                tooltipText: root.t("Remove link")
+                                                onClicked: root.removeDraftLink(formLinkRow.index)
+                                            }
+                                        }
+                                    }
+                                    Action {
+                                        Layout.fillWidth: true
+                                        iconText: "󰐕"
+                                        text: root.t("Add link")
+                                        bordered: true
+                                        enabled: State.DraftState.links.length < root.maxLinks
+                                        onClicked: root.addDraftLink()
+                                    }
                                     Rule { title: root.t("Advanced"); Layout.topMargin: Style.space(6) }
                                     FieldBlock {
-                                        label: root.t("Files / VS Code folder · optional")
+                                        label: root.t(root.vscodeEnabled ? "Files / VS Code folder · optional" : "Files folder · optional")
                                         Field { id: folderField; placeholderText: "/home/…/project"; maximumLength: 1024; onTextChanged: if (State.DraftState.active) State.DraftState.remoteFolder = text; onActiveFocusChanged: root.rememberDraftFocus("folder", folderField) }
                                     }
                                     FieldBlock {
@@ -2472,16 +2593,12 @@ Ui.Panel {
                                 title: root.hostKeyState === "known" ? root.t("Already trusted") : root.t("Not changed")
                                 text: root.hostKeyMessage
                             }
-                            GridLayout {
+                            ColumnLayout {
                                 visible: root.hostKeyState === "new"
                                 Layout.fillWidth: true
                                 Layout.topMargin: Style.space(6)
-                                columns: root.wide ? 2 : 1
-                                columnSpacing: Style.space(24)
-                                rowSpacing: Style.space(12)
+                                spacing: Style.space(12)
                                 Notice {
-                                    Layout.alignment: Qt.AlignTop
-                                    Layout.preferredWidth: 1
                                     kind: "error"
                                     iconText: "󰒃"
                                     title: root.t("A scan does not prove identity")
@@ -2489,8 +2606,6 @@ Ui.Panel {
                                 }
                                 ColumnLayout {
                                     Layout.fillWidth: true
-                                    Layout.preferredWidth: 1
-                                    Layout.alignment: Qt.AlignTop
                                     spacing: Style.space(10)
                                     CheckRow {
                                         checked: root.hostKeyCompared
@@ -2526,16 +2641,12 @@ Ui.Panel {
                         Scroll {
                             Layout.fillWidth: true
                             Layout.fillHeight: true
-                            GridLayout {
+                            ColumnLayout {
                                 Layout.fillWidth: true
-                                columns: root.wide ? 2 : 1
-                                columnSpacing: Style.space(28)
-                                rowSpacing: Style.space(14)
+                                spacing: Style.space(14)
                                 enabled: !root.busy && root.settingsLoaded
                                 ColumnLayout {
                                     Layout.fillWidth: true
-                                    Layout.preferredWidth: 1
-                                    Layout.alignment: Qt.AlignTop
                                     spacing: Style.space(12)
                                     Rule { title: root.t("General") }
                                     RowLayout {
@@ -2547,7 +2658,7 @@ Ui.Panel {
                                             onChanged: function(v) { root.languageDraft = v }
                                         }
                                     }
-                                    Rule { title: root.t("Layout"); visible: !root.wide }
+                                    Rule { title: root.t("Layout") }
                                     RowLayout {
                                         Layout.fillWidth: true
                                         ColumnLayout {
@@ -2572,25 +2683,20 @@ Ui.Panel {
                                             Label { text: root.t("Check pinned hosts") }
                                             Caption { text: root.t("Minutes between background checks · lights the bar badge") }
                                         }
-                                        Segmented {
+                                        Stepper {
                                             value: root.watchDraft
-                                            options: [{value: "0", label: root.t("Off")}, {value: "5", label: "5"}, {value: "15", label: "15"},
-                                                      {value: "30", label: "30"}, {value: "60", label: "60"}]
+                                            options: [{value: "0", label: root.t("Off")}].concat([5, 15, 30, 60].map(function(m) {
+                                                return {value: String(m), label: root.t("%1 min").arg(m)}
+                                            }))
                                             onChanged: function(v) { root.watchDraft = v }
                                         }
                                     }
-                                    Rule { title: root.t("About"); visible: root.wide }
-                                    InfoLine { visible: root.wide; iconText: "󰋼"; text: root.t("Changes apply to new connections; open terminals keep running.") }
-                                    InfoLine { visible: root.wide; iconText: "󰒃"; text: root.t("Settings are stored separately from hosts and never exported.") }
-                                    InfoLine { visible: root.wide; iconText: "󰗊"; text: root.t("Language and layout switch the whole panel after Save.") }
                                 }
                                 ColumnLayout {
                                     Layout.fillWidth: true
-                                    Layout.preferredWidth: 1
-                                    Layout.alignment: Qt.AlignTop
                                     spacing: Style.space(6)
                                     Rule { title: root.t("Terminal"); trailing: "SSH · AI CLI · " + root.t("scripts") }
-                                    Caption { visible: !root.wide; text: root.t("Opens SSH, AI CLI and scripts on every host. VS Code and Files open on their own.") }
+                                    Caption { text: root.t(root.vscodeEnabled ? "Opens SSH, AI CLI and scripts on every host. VS Code and Files open on their own." : "Opens SSH, AI CLI and scripts on every host. Files open on their own.") }
                                     Notice {
                                         visible: root.settingsLoaded && !root.terminalAvailable
                                         kind: "error"
@@ -2636,8 +2742,7 @@ Ui.Panel {
                                             }
                                         }
                                     }
-                                    Caption { visible: root.wide; text: root.t("VS Code and Files open in their own windows and ignore this choice.") }
-                                    InfoLine { visible: !root.wide; iconText: "󰋼"; text: root.t("Stored separately from hosts and not included in import / export.") }
+                                    InfoLine { iconText: "󰋼"; text: root.t("Stored separately from hosts and not included in import / export.") }
                                 }
                             }
                         }
@@ -2753,15 +2858,11 @@ Ui.Panel {
                             visible: root.transferTab === "export"
                             Layout.fillWidth: true
                             Layout.fillHeight: true
-                            GridLayout {
+                            ColumnLayout {
                                 Layout.fillWidth: true
-                                columns: root.wide ? 2 : 1
-                                columnSpacing: Style.space(28)
-                                rowSpacing: Style.space(14)
+                                spacing: Style.space(14)
                                 ColumnLayout {
                                     Layout.fillWidth: true
-                                    Layout.preferredWidth: 1
-                                    Layout.alignment: Qt.AlignTop
                                     spacing: Style.space(12)
                                     FieldBlock {
                                         label: root.t("New JSON file · absolute path")
@@ -2779,14 +2880,14 @@ Ui.Panel {
                                     CheckRow { checked: true; locked: true; text: root.t("Hosts and groups"); detail: root.t("Name, address, port, login, AI CLI. Auth becomes key / agent.") }
                                     CheckRow {
                                         checked: root.exportNotes
-                                        text: root.t("Notes")
-                                        detail: root.t("Free-text notes of every host")
+                                        text: root.t("Notes and links")
+                                        detail: root.t("Free-text notes and service links of every host")
                                         onToggled: { root.exportNotes = !root.exportNotes; root.requestExportPreview() }
                                     }
                                     CheckRow {
                                         checked: root.exportPaths
                                         text: root.t("Paths")
-                                        detail: root.t("Key file, AI CLI folder, Files / VS Code folder")
+                                        detail: root.t(root.vscodeEnabled ? "Key file, AI CLI folder, Files / VS Code folder" : "Key file, AI CLI folder, Files folder")
                                         onToggled: { root.exportPaths = !root.exportPaths; root.requestExportPreview() }
                                     }
                                     Tinted {
@@ -2799,8 +2900,6 @@ Ui.Panel {
                                 ColumnLayout {
                                     visible: root.wide
                                     Layout.fillWidth: true
-                                    Layout.preferredWidth: 1
-                                    Layout.alignment: Qt.AlignTop
                                     spacing: Style.space(10)
                                     Rule {
                                         title: root.t("File preview")
@@ -3132,10 +3231,11 @@ Ui.Panel {
         if (!preview || !preview.sample) return "{ \"version\": 1, \"groups\": [], \"devices\": [] }"
         var d = preview.sample
         var lines = ["{ \"version\": 1,", "  \"groups\": [ …" + preview.groups + " ],", "  \"devices\": [{"]
-        var keys = ["name", "host", "port", "login", "auth", "agents", "note", "keyPath", "agentFolder", "remoteFolder"]
+        var keys = ["name", "host", "port", "login", "auth", "agents", "note", "links", "keyPath", "agentFolder", "remoteFolder"]
         for (var i = 0; i < keys.length; i++) {
             var value = d[keys[i]]
             if ((keys[i] === "note" || keys[i].indexOf("Path") > 0 || keys[i].indexOf("Folder") > 0) && value === "") continue
+            if (keys[i] === "links" && (!value || value.length === 0)) continue
             var shown = JSON.stringify(value)
             if (shown.length > 42) shown = shown.slice(0, 40) + "…\""
             lines.push("    \"" + keys[i] + "\": " + shown + ",")
@@ -3438,8 +3538,36 @@ Ui.Panel {
     }
     // Equal-width "pick one of N" built from the kit's ButtonGroup chips.
     component Segmented: Ui.ButtonGroup {
-        spacing: 0
+        spacing: Style.space(4)
         background: root.tint
+    }
+    // "− value +" over a fixed list of options; the ends disable instead of wrapping.
+    component Stepper: RowLayout {
+        id: stepper
+        property var options: []
+        property string value: ""
+        signal changed(string value)
+        readonly property int index: options.findIndex(function(o) { return o.value === stepper.value })
+        spacing: Style.space(4)
+        Action {
+            text: "−"
+            bordered: true
+            enabled: stepper.index > 0
+            onClicked: stepper.changed(stepper.options[stepper.index - 1].value)
+        }
+        Label {
+            Layout.fillWidth: false
+            Layout.minimumWidth: Style.space(56)
+            horizontalAlignment: Text.AlignHCenter
+            wrapMode: Text.NoWrap
+            text: stepper.index >= 0 ? stepper.options[stepper.index].label : ""
+        }
+        Action {
+            text: "+"
+            bordered: true
+            enabled: stepper.index >= 0 && stepper.index < stepper.options.length - 1
+            onClicked: stepper.changed(stepper.options[stepper.index + 1].value)
+        }
     }
     component Tab: Item {
         id: tab
@@ -3530,17 +3658,17 @@ Ui.Panel {
                     var key = event.key
                     if (key === Qt.Key_Down || key === Qt.Key_Up) {
                         root.moveSelection(key === Qt.Key_Down ? 1 : -1)
-                        pageFrame.forceActiveFocus()
+                        keySink.forceActiveFocus()
                         event.accepted = true
                     } else if (key === Qt.Key_Return || key === Qt.Key_Enter) {
                         if (root.current) root.launchDevice(root.current.id)
                         event.accepted = true
                     } else if (key === Qt.Key_Escape) {
                         if (root.query !== "") root.query = ""
-                        else root.close()
+                        else keySink.forceActiveFocus()
                         event.accepted = true
                     } else if (key === Qt.Key_Tab || key === Qt.Key_Backtab) {
-                        if (root.wide) { root.detailZone = root.current !== null; pageFrame.forceActiveFocus() }
+                        if (root.wide) { root.detailZone = root.current !== null; keySink.forceActiveFocus() }
                         else root.nextTab(key === Qt.Key_Backtab ? -1 : 1)
                         event.accepted = true
                     }
@@ -3592,7 +3720,10 @@ Ui.Panel {
         property int count: -1
         property bool collapsible: false
         property bool collapsed: false
+        property string actionIcon: ""
+        property string actionTooltip: ""
         signal toggled()
+        signal actionClicked()
         Layout.fillWidth: true
         Layout.bottomMargin: Style.space(2)
         spacing: Style.space(8)
@@ -3616,6 +3747,18 @@ Ui.Panel {
             font.family: Style.font.family
             font.pixelSize: Style.font.caption
             MouseArea { anchors.fill: parent; enabled: sectionTitle.collapsible; cursorShape: Qt.PointingHandCursor; onClicked: sectionTitle.toggled() }
+        }
+        IconAction {
+            visible: sectionTitle.actionIcon !== ""
+            Layout.topMargin: -Style.space(4)
+            Layout.bottomMargin: -Style.space(4)
+            // Reach into the Scroll gutter (8 px) to centre on the 30 px header icons.
+            Layout.rightMargin: -Style.space(5)
+            iconText: sectionTitle.actionIcon
+            size: Style.space(24)
+            enabled: root.loaded
+            tooltipText: sectionTitle.actionTooltip
+            onClicked: sectionTitle.actionClicked()
         }
     }
     component EmptyState: ColumnLayout {
@@ -3646,7 +3789,6 @@ Ui.Panel {
         property bool showPin: false
         readonly property bool selectedRow: root.currentKey === rowKey
         readonly property var status: root.rowStatus(device)
-        readonly property string kind: root.statusKind(device)
         readonly property bool highlighted: root.highlightGroupId !== "" && device && device.group === root.highlightGroupId
         visible: device !== null
         Layout.fillWidth: true
@@ -3654,6 +3796,7 @@ Ui.Panel {
         hasCursor: rowMouse.containsMouse && !selectedRow
         current: selectedRow || highlighted
         currentFill: Style.hoverFillFor(Color.foreground, Color.accent)
+        readonly property string kind: device ? root.statusKind(device) : ""
         opacity: kind === "offline" || kind === "error" ? 0.7 : 1
         onSelectedRowChanged: if (selectedRow) root.ensureVisible(hostRow)
         Rectangle {
@@ -3675,7 +3818,7 @@ Ui.Panel {
                     root.openMenu(hostRow.device, p.x, p.y, true)
                 } else {
                     root.detailZone = false
-                    pageFrame.forceActiveFocus()
+                    keySink.forceActiveFocus()
                 }
             }
             onDoubleClicked: function(mouse) { if (mouse.button === Qt.LeftButton) root.launchDevice(hostRow.device.id) }
@@ -3686,7 +3829,7 @@ Ui.Panel {
             anchors.rightMargin: Style.space(10)
             spacing: Style.space(10)
             StatusDot {
-                kind: hostRow.kind
+                kind: root.dotKind(hostRow.device)
                 HoverHandler { id: dotHover }
                 Ui.PanelToolTip { visible: dotHover.hovered; text: root.statusDetails(hostRow.device) }
             }
@@ -3888,7 +4031,10 @@ Ui.Panel {
         property string detail: ""
         property bool cursor: false
         property bool spinning: false
+        property string actionIcon: ""
+        property string actionTooltip: ""
         signal clicked()
+        signal actionClicked()
         Layout.fillWidth: true
         implicitHeight: Style.space(34)
         hasCursor: pickerMouse.containsMouse && !cursor
@@ -3896,6 +4042,7 @@ Ui.Panel {
         currentFill: Style.hoverFillFor(Color.foreground, Color.accent)
         Rectangle { visible: pickerRow.cursor; width: Style.space(2); height: parent.height; color: Color.accent }
         MouseArea { id: pickerMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: pickerRow.clicked() }
+        HoverHandler { id: pickerHover }
         RowLayout {
             anchors.fill: parent
             anchors.leftMargin: Style.space(10)
@@ -3914,6 +4061,15 @@ Ui.Panel {
                 layer.effect: PrivacyBlur {}
             }
             Spinner { visible: pickerRow.spinning }
+            IconAction {
+                visible: pickerRow.actionIcon !== ""
+                opacity: pickerHover.hovered || pickerRow.cursor ? 1 : 0
+                iconText: pickerRow.actionIcon
+                size: Style.space(24)
+                focusable: false
+                tooltipText: pickerRow.actionTooltip
+                onClicked: pickerRow.actionClicked()
+            }
         }
     }
     // Narrow layout: the selected host and every way to act on it.
@@ -3934,7 +4090,7 @@ Ui.Panel {
         RowLayout {
             Layout.fillWidth: true
             spacing: Style.space(10)
-            StatusDot { kind: root.statusKind(dock.d) }
+            StatusDot { kind: root.dotKind(dock.d) }
             Text {
                 textFormat: Text.PlainText
                 text: dock.d ? dock.d.name : ""
@@ -3969,7 +4125,7 @@ Ui.Panel {
             visible: root.dockMode === "delete"
             kind: "error"
             iconText: "󰆴"
-            title: dock.d ? root.t("Delete %1 from Remote Hosts?").arg(dock.d.name) : ""
+            title: dock.d ? root.t("Delete %1 from HostDeck?").arg(dock.d.name) : ""
             text: dock.d ? root.deleteConsequence(dock.d) : ""
         }
         RowLayout {
@@ -4005,12 +4161,13 @@ Ui.Panel {
                 onClicked: root.launchDevice(dock.d.id, "sftp")
             }
             LaunchTile {
-                target: "vscode"; iconText: "󰨞"; keyText: "C"; title: "VS Code"
+                target: "vscode"; iconText: "󰨞"; keyText: "V"; title: "VS Code"
+                visible: root.vscodeEnabled
                 enabled: dock.d !== null && dock.d.auth === "agent"
                 tooltipText: root.t("VS Code needs a key or SSH agent: Remote-SSH cannot use a saved password.")
                 onClicked: root.launchDevice(dock.d.id, "vscode")
             }
-            LaunchTile { target: "copy"; iconText: "󰆏"; keyText: "Y"; title: root.t("Copy"); onClicked: root.copyEndpoint(dock.d) }
+            LaunchTile { target: "copy"; iconText: "󰆏"; keyText: "C"; title: root.t("Copy"); onClicked: root.copyEndpoint(dock.d) }
         }
         ColumnLayout {
             visible: root.dockMode === "ai" && dock.d !== null
@@ -4063,6 +4220,28 @@ Ui.Panel {
             Caption { visible: root.hostScripts(dock.d).length === 0; text: root.t("No scripts yet. Scripts run over SSH stdin in your terminal.") }
             Action { iconText: "󰐕"; text: root.t("Add script"); onClicked: root.editScript(dock.d.id, null) }
         }
+        ColumnLayout {
+            visible: root.dockMode === "links" && dock.d !== null
+            Layout.fillWidth: true
+            spacing: Style.space(2)
+            Rule { title: root.t("Open link"); trailing: root.t("Esc closes") }
+            Repeater {
+                model: root.hostLinks(dock.d)
+                PickerRow {
+                    required property var modelData
+                    required property int index
+                    number: index + 1
+                    iconText: "󰌹"
+                    text: root.linkLabel(modelData)
+                    detail: modelData.url
+                    cursor: root.dockCursor === index
+                    actionIcon: "󰆏"
+                    actionTooltip: root.t("Copy URL")
+                    onClicked: { root.openLink(modelData); root.dockMode = "" }
+                    onActionClicked: root.copyLink(modelData)
+                }
+            }
+        }
         RowLayout {
             visible: root.dockMode === ""
             Layout.fillWidth: true
@@ -4090,6 +4269,13 @@ Ui.Panel {
                 text: root.t("Scripts") + " " + root.hostScripts(dock.d).length + "  ▾"
                 onClicked: { root.dockMode = "scripts"; root.dockCursor = 0 }
             }
+            Chip {
+                visible: root.hostLinks(dock.d).length > 0
+                iconText: "󰌹"
+                text: root.t("Links") + " " + root.hostLinks(dock.d).length + "  ▾"
+                tooltipText: root.t("Links") + "  L"
+                onClicked: { root.dockMode = "links"; root.dockCursor = 0 }
+            }
             Item { Layout.fillWidth: true }
         }
     }
@@ -4106,7 +4292,8 @@ Ui.Panel {
             width: Math.min(parent.width, Style.space(520))
             iconText: "󰒋"
             title: root.t("Add your first host")
-            body: root.t("A server, NAS or another computer. Once added you get SSH, Files, VS Code, AI CLI and scripts here in one click.")
+            body: (root.vscodeEnabled ? root.t("A server, NAS or another computer. Once added you get SSH, Files, VS Code, AI CLI and scripts here in one click.")
+                                                       : root.t("A server, NAS or another computer. Once added you get SSH, Files, AI CLI and scripts here in one click."))
             RowLayout {
                 Layout.alignment: Qt.AlignHCenter
                 Layout.fillWidth: false
@@ -4121,7 +4308,7 @@ Ui.Panel {
                 Repeater {
                     model: [[root.t("Address + login"), root.t("IPv4, IPv6 or domain")],
                             [root.t("Verify host key"), root.t("Compare fingerprints once")],
-                            [root.t("Launch"), "SSH, " + root.t("Files") + ", VS Code, AI"]]
+                            [root.t("Launch"), "SSH, " + root.t("Files") + (root.vscodeEnabled ? ", VS Code" : "") + ", AI"]]
                     ColumnLayout {
                         id: stepColumn
                         required property var modelData
@@ -4180,7 +4367,7 @@ Ui.Panel {
                             layer.enabled: root.addressesHidden && visible
                             layer.effect: PrivacyBlur {}
                         }
-                        IconAction { iconText: "󰆏"; size: Style.space(24); tooltipText: root.t("Copy SSH endpoint") + "  Y"; onClicked: root.copyEndpoint(detail.d) }
+                        IconAction { iconText: "󰆏"; size: Style.space(24); tooltipText: root.t("Copy SSH endpoint") + "  C"; onClicked: root.copyEndpoint(detail.d) }
                     }
                 }
                 Item { Layout.fillWidth: true }
@@ -4233,7 +4420,8 @@ Ui.Panel {
                         onClicked: root.launchDevice(detail.d.id, "sftp")
                     }
                     LaunchTile {
-                        target: "vscode"; iconText: "󰨞"; keyText: "C"; title: "VS Code"
+                        target: "vscode"; iconText: "󰨞"; keyText: "V"; title: "VS Code"
+                        visible: root.vscodeEnabled
                         enabled: detail.d !== null && detail.d.auth === "agent"
                         subtitle: enabled ? "Remote-SSH" : root.t("Needs a key or SSH agent")
                         tooltipText: enabled ? "" : root.t("VS Code needs a key or SSH agent: Remote-SSH cannot use a saved password.")
@@ -4304,6 +4492,36 @@ Ui.Panel {
                         Action { Layout.fillWidth: true; Layout.topMargin: Style.space(6); iconText: "󰐕"; text: root.t("Add script"); bordered: true; onClicked: root.editScript(detail.d.id, null) }
                     }
                 }
+                Rule { title: root.t("Links"); trailing: String(root.hostLinks(detail.d).length) }
+                GridLayout {
+                    visible: root.hostLinks(detail.d).length > 0
+                    Layout.fillWidth: true
+                    columns: 2
+                    columnSpacing: Style.space(8)
+                    rowSpacing: Style.space(8)
+                    Repeater {
+                        model: root.hostLinks(detail.d)
+                        LinkCard {
+                            required property var modelData
+                            required property int index
+                            link: modelData
+                            target: "link:" + index
+                        }
+                    }
+                }
+                Tinted {
+                    visible: detail.d !== null && root.hostLinks(detail.d).length === 0
+                    Label { text: root.t("No links yet") }
+                    Text {
+                        textFormat: Text.PlainText
+                        text: root.t("Add services in Edit host") + "  ›"
+                        color: Color.accent
+                        font.family: Style.font.family
+                        font.pixelSize: Style.font.body
+                        font.bold: true
+                        MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: root.editDevice(detail.d) }
+                    }
+                }
                 Tinted {
                     visible: detail.d !== null && detail.d.note !== ""
                     RowLayout {
@@ -4335,7 +4553,7 @@ Ui.Panel {
                 visible: root.hostDeleteId !== "" && detail.d !== null
                 kind: "error"
                 iconText: "󰆴"
-                title: detail.d ? root.t("Delete %1 from Remote Hosts?").arg(detail.d.name) : ""
+                title: detail.d ? root.t("Delete %1 from HostDeck?").arg(detail.d.name) : ""
                 text: detail.d ? root.deleteConsequence(detail.d) : ""
                 Action { text: root.t("Keep") + "   Esc"; bordered: true; onClicked: { root.hostDeleteId = ""; root.dockMode = "" } }
                 Primary { iconText: "󰆴"; text: root.t("Delete") + "   ↵"; fillColor: Color.urgent; enabled: !root.busy; onClicked: root.confirmHostDelete() }
@@ -4375,6 +4593,50 @@ Ui.Panel {
                     layer.enabled: fact.blurred && root.addressesHidden && visible
                     layer.effect: PrivacyBlur {}
                 }
+            }
+        }
+    }
+    component LinkCard: Ui.CursorSurface {
+        id: linkCard
+        property var link: ({name: "", url: ""})
+        property string target: ""
+        readonly property bool cursor: root.detailZone && root.detailTargetIndex(target) === root.detailCursor
+        Layout.fillWidth: true
+        Layout.preferredWidth: 1
+        implicitHeight: Style.space(54)
+        hasCursor: linkHover.hovered && !cursor
+        current: cursor
+        currentFill: Style.hoverFillFor(Color.foreground, Color.accent)
+        Rectangle { anchors.fill: parent; z: -1; color: root.tint }
+        HoverHandler { id: linkHover }
+        Rectangle { visible: linkCard.cursor; width: Style.space(2); height: parent.height; color: Color.accent }
+        MouseArea { id: linkMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.openLink(linkCard.link) }
+        RowLayout {
+            anchors.fill: parent
+            anchors.leftMargin: Style.space(12)
+            anchors.rightMargin: Style.space(8)
+            spacing: Style.space(10)
+            Text { textFormat: Text.PlainText; text: "󰌹"; color: Color.accent; font.family: Style.font.family; font.pixelSize: Style.font.title }
+            ColumnLayout {
+                Layout.fillWidth: true
+                spacing: Style.space(2)
+                Label { text: root.linkLabel(linkCard.link); font.bold: true; wrapMode: Text.NoWrap; elide: Text.ElideRight }
+                Caption {
+                    text: linkCard.link.url
+                    wrapMode: Text.NoWrap
+                    elide: Text.ElideMiddle
+                    layer.enabled: root.addressesHidden && visible
+                    layer.effect: PrivacyBlur {}
+                }
+            }
+            IconAction {
+                // Kept in the layout so hovering never shifts the text.
+                opacity: linkHover.hovered || linkCard.cursor ? 1 : 0
+                iconText: "󰆏"
+                size: Style.space(26)
+                focusable: false
+                tooltipText: root.t("Copy URL") + (linkCard.cursor ? "  C" : "")
+                onClicked: root.copyLink(linkCard.link)
             }
         }
     }
@@ -4788,7 +5050,7 @@ Ui.Panel {
         enabled: !root.busy
         Keys.onReturnPressed: root.addGroup(newGroup)
         Keys.onEnterPressed: root.addGroup(newGroup)
-        Keys.onEscapePressed: { text = ""; pageFrame.forceActiveFocus() }
+        Keys.onEscapePressed: { text = ""; keySink.forceActiveFocus() }
     }
     component GroupRow: ColumnLayout {
         id: groupRow
@@ -4844,7 +5106,7 @@ Ui.Panel {
                     onTextChanged: { root.groupEditName = text; if (text.trim() !== "") root.groupEditInvalid = false }
                     Keys.onReturnPressed: root.commitGroupEdit()
                     Keys.onEnterPressed: root.commitGroupEdit()
-                    Keys.onEscapePressed: { root.groupEditId = ""; pageFrame.forceActiveFocus() }
+                    Keys.onEscapePressed: { root.groupEditId = ""; keySink.forceActiveFocus() }
                     Text {
                         visible: groupNameEdit.text.length >= 80 || root.groupEditInvalid
                         anchors.right: parent.right
@@ -4895,7 +5157,7 @@ Ui.Panel {
                     foreground: groupRow.reason === "" ? Color.urgent : root.faintText
                     enabled: !root.busy
                     tooltipText: groupRow.reason === "" ? root.t("Delete") : groupRow.reason
-                    onClicked: if (groupRow.reason === "") { root.groupEditId = ""; root.groupDeleteId = groupRow.modelData.id; pageFrame.forceActiveFocus() }
+                    onClicked: if (groupRow.reason === "") { root.groupEditId = ""; root.groupDeleteId = groupRow.modelData.id; keySink.forceActiveFocus() }
                 }
             }
         }

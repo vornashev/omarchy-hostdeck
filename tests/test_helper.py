@@ -47,7 +47,7 @@ def profile(**changes):
             "login": "tema", "group": h.DEFAULT_GROUP, "note": "private note",
             "auth": "agent", "keyPath": "", "saveKeyPassphrase": False,
             "client": "ghostty", "remoteFolder": "", "launchMode": "shell",
-            "customExecutable": "", "agents": [], "agentFolder": "", "pinned": False, **changes}
+            "customExecutable": "", "agents": [], "agentFolder": "", "pinned": False, "links": [], **changes}
 
 
 class Isolated(unittest.TestCase):
@@ -146,6 +146,26 @@ class ValidationTests(Isolated):
             with self.assertRaises(h.Error):
                 h.device(profile(**changes))
 
+    def test_service_links_are_optional_http_without_credentials(self):
+        legacy = profile()
+        legacy.pop("links")
+        self.assertEqual(h.device(legacy)["links"], [])
+        links = [{"name": "Grafana", "url": "http://example.test:3000/d/home?orgId=1"},
+                 {"name": "", "url": "https://[2001:db8::1]:8006/"}]
+        self.assertEqual(h.device(profile(links=links))["links"], links)
+        for url in ["javascript:alert(1)", "file:///etc/passwd", "ssh://example.test", "http://",
+                    "http://user:pass@example.test/", "http://token@example.test/", "http://example.test:99999/",
+                    "http://example.test/a b", "http://example.test/\x1b", "example.test:3000"]:
+            with self.subTest(url=url), self.assertRaises(h.Error):
+                h.device(profile(links=[{"name": "x", "url": url}]))
+        for value in [{"name": "x", "url": "http://a.test", "token": "secret"}, {"url": "http://a.test"}, "http://a.test"]:
+            with self.subTest(link=value), self.assertRaises(h.Error):
+                h.device(profile(links=[value]))
+        with self.assertRaises(h.Error):
+            h.device(profile(links=[{"name": "", "url": "http://a.test/"}] * 2))
+        with self.assertRaises(h.Error):
+            h.device(profile(links=[{"name": "", "url": f"http://a.test/{i}"} for i in range(h.MAX_LINKS + 1)]))
+
     def test_document_duplicates_group_and_limit(self):
         bad = copy.deepcopy(self.data)
         bad["devices"].append(profile(id="bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"))
@@ -175,7 +195,7 @@ class PersistenceTests(Isolated):
         with patch.object(h, "MAX_BYTES", len(original)), self.assertRaises(h.Error):
             self.store.save(oversized)
         self.assertEqual(self.store.path.read_bytes(), original)
-        self.assertFalse(list(self.store.root.glob(".remote-hosts-*")))
+        self.assertFalse(list(self.store.root.glob(".hostdeck-*")))
 
     def test_permissions_private_atomic_and_no_secret_fields(self):
         self.assertEqual(stat.S_IMODE(self.store.root.stat().st_mode), 0o700)
@@ -184,14 +204,14 @@ class PersistenceTests(Isolated):
         self.call(op="saveDevice", device=profile(name="renamed"))
         self.assertNotEqual(inode, self.store.path.stat().st_ino)
         self.assertEqual(self.store.load()["devices"][0]["name"], "renamed")
-        self.assertFalse(list(self.store.root.glob(".remote-hosts-*")))
+        self.assertFalse(list(self.store.root.glob(".hostdeck-*")))
 
     def test_atomic_failure_preserves_original_and_cleans_temp(self):
         original = self.store.path.read_bytes()
         with patch.object(h.os, "replace", side_effect=OSError("disk full")), self.assertRaises(OSError):
             self.call(op="saveDevice", device=profile(name="new"))
         self.assertEqual(original, self.store.path.read_bytes())
-        self.assertFalse(list(self.store.root.glob(".remote-hosts-*")))
+        self.assertFalse(list(self.store.root.glob(".hostdeck-*")))
 
     def test_public_permissions_and_symlink_fail_closed(self):
         self.store.path.chmod(0o644)
@@ -305,6 +325,12 @@ class TransferTests(Isolated):
              "devices": [profile(keyPath="/home/tema/key", saveKeyPassphrase=True)]},
             paths=True)
         self.assertFalse(exported["devices"][0]["saveKeyPassphrase"])
+
+    def test_links_are_exported_only_with_notes(self):
+        links = [{"name": "Portainer", "url": "https://example.test:9443/"}]
+        self.data["devices"] = [profile(links=links)]
+        self.assertEqual(h.export_document(self.data)["devices"][0]["links"], [])
+        self.assertEqual(h.export_document(self.data, notes=True)["devices"][0]["links"], links)
 
     def test_export_no_clobber_and_permissions(self):
         dest = self.root / "export.json"
@@ -432,11 +458,11 @@ class SecretTests(Isolated):
         self.assertNotIn(sentinel, repr(args))
         self.assertNotIn(sentinel, repr({k: v for k, v in kwargs.items() if k != "input"}))
         self.assertEqual(kwargs["input"], sentinel)
-        self.assertEqual(args[0][:3], ["secret-tool", "store", "--label=Omarchy remote host"])
+        self.assertEqual(args[0][:3], ["secret-tool", "store", "--label=HostDeck host"])
         self.assertNotIn("shell", kwargs)
 
 
-    def test_key_passphrase_uses_distinct_namespace_label_and_no_legacy_lookup(self):
+    def test_key_passphrase_uses_distinct_namespace_label_and_only_its_legacy_lookup(self):
         sentinel = "SYNTHETIC-key-passphrase"
         d = profile(keyPath="/tmp/synthetic-key", saveKeyPassphrase=True)
         with patch.object(h.shutil, "which", return_value="/usr/bin/secret-tool"), \
@@ -444,7 +470,7 @@ class SecretTests(Isolated):
             h.secret("store", d, sentinel, kind="key-passphrase")
         args, kwargs = run.call_args
         self.assertEqual(args[0][:3], ["secret-tool", "store",
-                                      "--label=Omarchy remote host key passphrase"])
+                                      "--label=HostDeck host key passphrase"])
         self.assertEqual(args[0][3:], h.secret_args(d, kind="key-passphrase"))
         self.assertEqual(kwargs["input"], sentinel)
         self.assertNotEqual(h.secret_args(d), h.secret_args(d, kind="key-passphrase"))
@@ -452,7 +478,9 @@ class SecretTests(Isolated):
              patch.object(h.subprocess, "run", return_value=Mock(returncode=1)) as run, \
              self.assertRaises(h.Error):
             h.secret("lookup", d, kind="key-passphrase")
-        run.assert_called_once()
+        self.assertEqual([call.args[0] for call in run.call_args_list],
+                         [["secret-tool", "lookup", *h.secret_args(d, app, kind="key-passphrase")]
+                          for app in (h.APP, *h.KEY_PASSPHRASE_LEGACY_APPS)])
 
     def test_secret_missing_failure_timeout_redacted(self):
         sentinel = "NEVER_EXPOSE_ME"
@@ -467,8 +495,13 @@ class SecretTests(Isolated):
 
     def test_legacy_secrets_are_migrated_on_first_lookup(self):
         old_password = "legacy-secret"
-        for legacy_index, legacy_app in enumerate(h.LEGACY_APPS):
-            with self.subTest(legacy_app=legacy_app):
+        d = profile(keyPath="/tmp/synthetic-key", saveKeyPassphrase=True)
+        cases = [("password", app) for app in h.LEGACY_APPS] + \
+                [("key-passphrase", app) for app in h.KEY_PASSPHRASE_LEGACY_APPS]
+        for kind, legacy_app in cases:
+            legacy_index = (h.LEGACY_APPS if kind == "password" else h.KEY_PASSPHRASE_LEGACY_APPS).index(legacy_app)
+            label = "--label=HostDeck host key passphrase" if kind == "key-passphrase" else "--label=HostDeck host"
+            with self.subTest(kind=kind, legacy_app=legacy_app):
                 responses = [
                     *[Mock(returncode=1, stdout="", stderr="") for _ in range(legacy_index + 1)],
                     Mock(returncode=0, stdout=old_password + "\n", stderr=""),
@@ -477,16 +510,16 @@ class SecretTests(Isolated):
                 ]
                 with patch.object(h.shutil, "which", return_value="secret-tool"), \
                      patch.object(h.subprocess, "run", side_effect=responses) as run:
-                    self.assertEqual(h.secret("lookup", profile()), old_password)
+                    self.assertEqual(h.secret("lookup", d, kind=kind), old_password)
                 calls = [call.args[0] for call in run.call_args_list]
-                self.assertEqual(calls[0], ["secret-tool", "lookup", *h.secret_args(profile())])
+                self.assertEqual(calls[0], ["secret-tool", "lookup", *h.secret_args(d, kind=kind)])
                 found_index = legacy_index + 1
                 self.assertEqual(calls[found_index],
-                                 ["secret-tool", "lookup", *h.secret_args(profile(), legacy_app)])
-                self.assertEqual(calls[found_index + 1][:3],
-                                 ["secret-tool", "store", "--label=Omarchy remote host"])
+                                 ["secret-tool", "lookup", *h.secret_args(d, legacy_app, kind=kind)])
+                self.assertEqual(calls[found_index + 1],
+                                 ["secret-tool", "store", label, *h.secret_args(d, kind=kind)])
                 self.assertEqual(calls[found_index + 2],
-                                 ["secret-tool", "clear", *h.secret_args(profile(), legacy_app)])
+                                 ["secret-tool", "clear", *h.secret_args(d, legacy_app, kind=kind)])
                 self.assertEqual(run.call_args_list[found_index + 1].kwargs["input"], old_password)
 
     def test_password_never_persisted_returned_and_failure_no_profile(self):
@@ -616,7 +649,7 @@ class SecretTests(Isolated):
         self.data["devices"] = [profile(auth="password")]
         with self.store.locked():
             self.store.save(self.data)
-        env = {"REMOTE_HOSTS_PROFILE": ID, "REMOTE_HOSTS_ENDPOINT": h.revision(list(h.endpoint(profile())))}
+        env = {"HOSTDECK_PROFILE": ID, "HOSTDECK_ENDPOINT": h.revision(list(h.endpoint(profile())))}
         expected = "tema@example.test's password: "
         with patch.object(h, "secret", return_value="secret") as secret:
             self.assertEqual(h.askpass(expected, env, self.store), "secret")
@@ -625,7 +658,7 @@ class SecretTests(Isolated):
             with self.subTest(prompt=prompt), patch.object(h, "secret") as secret, self.assertRaises(h.Error):
                 h.askpass(prompt, env, self.store)
             secret.assert_not_called()
-        for addition in [{"SSH_ASKPASS_PROMPT": "confirm"}, {"SSH_ASKPASS_PROMPT": "none"}, {"SSH_ASKPASS_PROMPT": "unexpected"}, {"REMOTE_HOSTS_ENDPOINT": "wrong"}]:
+        for addition in [{"SSH_ASKPASS_PROMPT": "confirm"}, {"SSH_ASKPASS_PROMPT": "none"}, {"SSH_ASKPASS_PROMPT": "unexpected"}, {"HOSTDECK_ENDPOINT": "wrong"}]:
             with patch.object(h, "secret") as secret, self.assertRaises(h.Error):
                 h.askpass(expected, {**env, **addition}, self.store)
             secret.assert_not_called()
@@ -636,9 +669,9 @@ class SecretTests(Isolated):
         with self.store.locked():
             self.store.save(self.data)
         env = {
-            "REMOTE_HOSTS_PROFILE": ID,
-            "REMOTE_HOSTS_ENDPOINT": h.revision(list(h.endpoint(d))),
-            "REMOTE_HOSTS_KEY": h.revision(d["keyPath"]),
+            "HOSTDECK_PROFILE": ID,
+            "HOSTDECK_ENDPOINT": h.revision(list(h.endpoint(d))),
+            "HOSTDECK_KEY": h.revision(d["keyPath"]),
         }
         expected = "Enter passphrase for key '/tmp/synthetic-key': "
         with patch.object(h, "secret", return_value="key-secret") as secret:
@@ -649,8 +682,8 @@ class SecretTests(Isolated):
             ("tema@example.test's password: ", {}),
             ("Are you sure you want to continue connecting (yes/no)?", {}),
             (expected, {"SSH_ASKPASS_PROMPT": "confirm"}),
-            (expected, {"REMOTE_HOSTS_ENDPOINT": "old"}),
-            (expected, {"REMOTE_HOSTS_KEY": "old"}),
+            (expected, {"HOSTDECK_ENDPOINT": "old"}),
+            (expected, {"HOSTDECK_KEY": "old"}),
         ]
         for prompt, changes in rejected:
             with self.subTest(prompt=prompt, changes=changes), patch.object(h, "secret") as secret, \
@@ -993,7 +1026,7 @@ class ClientTests(Isolated):
             "XDG_RUNTIME_DIR": str(self.root),
             "SSH_ASKPASS": "/evil",
             "SSH_ASKPASS_PROMPT": "confirm",
-            "REMOTE_HOSTS_KEY": "old",
+            "HOSTDECK_KEY": "old",
         }
         with patch.dict(os.environ, inherited), \
              patch.object(h.shutil, "which", return_value="/usr/bin/tool"), \
@@ -1008,7 +1041,7 @@ class ClientTests(Isolated):
         self.assertEqual(env["SSH_ASKPASS"], str(h.HERE / "askpass.py"))
         self.assertEqual(env["SSH_ASKPASS_REQUIRE"], "force")
         self.assertNotIn("SSH_ASKPASS_PROMPT", env)
-        self.assertEqual(env["REMOTE_HOSTS_KEY"], h.revision(str(key)))
+        self.assertEqual(env["HOSTDECK_KEY"], h.revision(str(key)))
         self.assertNotIn("key-passphrase", json.dumps(run.call_args.args[0]))
 
     def test_mount_sftp_key_passphrase_failure_returns_fixed_error(self):
@@ -1102,11 +1135,19 @@ class ClientTests(Isolated):
 
     def test_unknown_vscode_host_preflights_before_runtime_files(self):
         preview = {"hostKeys": {"state": "new", "deviceId": ID}}
-        with patch.object(h, "has_known_host_entry", return_value=False), \
+        with patch.object(h, "VSCODE_ENABLED", True), \
+             patch.object(h, "has_known_host_entry", return_value=False), \
              patch.object(h, "host_key_preview", return_value=preview), \
              patch.object(h, "launch") as launch:
             result = self.call(op="launch", id=ID, client="vscode")
         self.assertEqual(result, preview)
+        launch.assert_not_called()
+
+    def test_parked_vscode_launch_is_refused(self):
+        with patch.object(h, "has_known_host_entry", return_value=True), \
+             patch.object(h, "launch") as launch, \
+             self.assertRaisesRegex(h.Error, "Неизвестный клиент"):
+            self.call(op="launch", id=ID, client="vscode")
         launch.assert_not_called()
 
     def test_vscode_runtime_config_is_private_and_profile_isolated(self):
@@ -1164,7 +1205,7 @@ class ClientTests(Isolated):
         self.data["devices"] = [profile(auth="password")]
         with self.store.locked():
             self.store.save(self.data)
-        with patch.object(h, "Store", return_value=self.store), patch.object(h.shutil, "which", return_value="ssh"), patch.object(h.os, "execvpe") as execute, patch.dict(os.environ, {"SSH_ASKPASS": "/evil", "SSH_ASKPASS_PROMPT": "confirm", "REMOTE_HOSTS_KEY": "old"}), patch.object(h, "secret") as secret:
+        with patch.object(h, "Store", return_value=self.store), patch.object(h.shutil, "which", return_value="ssh"), patch.object(h.os, "execvpe") as execute, patch.dict(os.environ, {"SSH_ASKPASS": "/evil", "SSH_ASKPASS_PROMPT": "confirm", "HOSTDECK_KEY": "old"}), patch.object(h, "secret") as secret:
             h.terminal(ID)
         secret.assert_not_called()
         executable, args, env = execute.call_args.args
@@ -1175,7 +1216,7 @@ class ClientTests(Isolated):
         self.assertEqual(env["LC_ALL"], "C")
         self.assertEqual(env["TERM"], "xterm-256color")
         self.assertIn("StrictHostKeyChecking=yes", args)
-        self.assertNotIn("REMOTE_HOSTS_KEY", env)
+        self.assertNotIn("HOSTDECK_KEY", env)
 
     def test_terminal_key_passphrase_environment_is_bound_without_secret(self):
         key = self.root / "synthetic-key"
@@ -1190,8 +1231,8 @@ class ClientTests(Isolated):
             h.terminal(ID, "codex")
         secret.assert_not_called()
         _, args, env = execute.call_args.args
-        self.assertEqual(env["REMOTE_HOSTS_ENDPOINT"], h.revision(list(h.endpoint(d))))
-        self.assertEqual(env["REMOTE_HOSTS_KEY"], h.revision(str(key)))
+        self.assertEqual(env["HOSTDECK_ENDPOINT"], h.revision(list(h.endpoint(d))))
+        self.assertEqual(env["HOSTDECK_KEY"], h.revision(str(key)))
         self.assertEqual(env["LC_ALL"], "C")
         self.assertEqual(env["TERM"], "xterm-256color")
         self.assertIn("exec codex", args[-1])
@@ -1276,7 +1317,7 @@ class HostKeyTests(Isolated):
         self.assertEqual(known.read_text(), f"[192.0.2.10]:2222 ssh-ed25519 {key}\n")
         self.assertEqual(stat.S_IMODE((home / ".ssh").stat().st_mode), 0o700)
         self.assertEqual(stat.S_IMODE(known.stat().st_mode), 0o600)
-        self.assertEqual(stat.S_IMODE((home / ".ssh/.vornashev.remote-hosts-known-hosts.lock").stat().st_mode), 0o600)
+        self.assertEqual(stat.S_IMODE((home / ".ssh/.vornashev.hostdeck-known-hosts.lock").stat().st_mode), 0o600)
         keyscan_run.assert_called_once()
 
     def test_existing_safe_permissions_are_preserved_not_chmodded(self):

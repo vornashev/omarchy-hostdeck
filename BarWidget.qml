@@ -3,7 +3,7 @@ import qs.Ui
 
 BarWidget {
     id: root
-    moduleName: "vornashev.remote-hosts"
+    moduleName: "vornashev.hostdeck"
 
     readonly property var panelItem: panelLoader.item
     readonly property bool opened: panelItem ? panelItem.opened === true : false

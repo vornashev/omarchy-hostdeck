@@ -7,14 +7,28 @@ config_home=${XDG_CONFIG_HOME:-$HOME/.config}
   echo "XDG_CONFIG_HOME must be a safe absolute path: $config_home" >&2
   exit 1
 }
-target=$config_home/omarchy/plugins/vornashev.remote-hosts
+target=$config_home/omarchy/plugins/vornashev.hostdeck
 command -v rsync >/dev/null || { echo "rsync is required; packages are not installed automatically" >&2; exit 1; }
 omarchy plugin validate "$root"
 mkdir -p "$target"
-rsync -a --delete \
-  --exclude='.git/' --exclude='.gitignore' --exclude='.pi/' --exclude='AGENTS.md' --exclude='scripts/' \
-  --exclude='untitled.pen' --exclude='DESIGN-REVIEW.md' \
-  "$root/" "$target/"
+# Ship exactly the plugin runtime: files git tracks or would track (so new,
+# not yet added files deploy too), minus development-only paths. Staging first
+# lets --delete drop anything else from the installed copy.
+stage=$(mktemp -d)
+trap 'rm -rf -- "$stage"' EXIT
+git -C "$root" ls-files -z --cached --others --exclude-standard \
+  | while IFS= read -r -d '' file; do
+      case $file in .gitignore|AGENTS.md|scripts/*|tests/*) continue ;; esac
+      [[ -e $root/$file ]] && printf '%s\0' "$file"
+    done \
+  | rsync -a --from0 --files-from=- "$root/" "$stage/"
+rsync -a --delete "$stage/" "$target/"
 chmod 700 "$target/askpass.py"
-omarchy-shell shell rescanPlugins
 printf 'Installed copy updated: %s\n' "$target"
+omarchy-restart-shell >/dev/null 2>&1
+for _ in {1..20}; do
+  omarchy-shell shell ping >/dev/null 2>&1 && { echo 'Shell restarted'; exit 0; }
+  sleep 0.5
+done
+echo 'Shell did not answer ping after restart' >&2
+exit 1

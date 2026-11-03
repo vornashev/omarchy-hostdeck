@@ -4,3 +4,10 @@ __pycache__/
 .coverage
 htmlcov/
 *.log
+.ruff_cache/
+
+# Local tooling and design sources
+.pi/
+*.pen
+*.figcraft
+DESIGN-REVIEW.md

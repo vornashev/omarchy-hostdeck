@@ -1,7 +1,7 @@
 # Project instructions
 
-This repository is the source of truth for the `vornashev.remote-hosts` Omarchy
-plugin, published as `omarchy-remote-hosts`. Follow these instructions as
+This repository is the source of truth for the `vornashev.hostdeck` Omarchy
+plugin, published as `omarchy-hostdeck`. Follow these instructions as
 repository constraints, then carry the user's requested work to completion.
 
 ## Operating mode
@@ -35,14 +35,25 @@ repository constraints, then carry the user's requested work to completion.
   JSON responses are consumed by QML; keep both sides synchronized.
 - `askpass.py` is a deliberately minimal OpenSSH password pipe. It must not
   print diagnostics, tracebacks, or secrets.
+- `HostDeckIcon.qml` draws the bar icon and its status signals.
+- `state/PrivacyState.qml` holds the transient address-hiding mode shared by
+  panel instances; it is never saved to disk.
+- VS Code Remote-SSH is parked: `vscodeEnabled` in `Widget.qml` hides every
+  entry point and `VSCODE_ENABLED` in `helper.py` refuses the client. Keep the
+  dormant code compiling and tested; re-enable both flags and the README
+  sections together.
 - `tests/` uses temporary data and mocked external processes/network access.
-- User-facing text defaults to English; Russian is the supported alternate language.
+- `scripts/` holds development tooling (`deploy-local`, `qml-lint`); it is not
+  shipped with the installed plugin.
+- User-facing text defaults to English; Russian is the supported alternate
+  language. Every visible string goes through `root.t()` and needs a Russian
+  entry in `state/I18n.qml`; keep `README.md` and `README.ru.md` in sync.
 
 ## Security and side-effect boundaries
 
 - Never edit `/usr/share/omarchy/`.
 - The live installed copy is
-  `~/.config/omarchy/plugins/vornashev.remote-hosts`. Develop and test in this
+  `~/.config/omarchy/plugins/vornashev.hostdeck`. Develop and test in this
   repository first. Deploy it with `scripts/deploy-local` as described in
   **Local deploy** below.
 - Never copy profiles, passwords, private keys, `known_hosts`, screenshots with
@@ -108,10 +119,12 @@ the verification checks pass:
 
 ```bash
 scripts/deploy-local
-omarchy-restart-shell
 ```
 
-Then confirm the shell answers `omarchy-shell shell ping` and the user journal
+The script installs only files git tracks or would track (minus `AGENTS.md`,
+`scripts/`, and `tests/`), so keep local design or tooling files gitignored. It
+restarts the shell and waits for `omarchy-shell shell ping`. Then confirm the
+user journal
 (`journalctl --user --since "-1 min"`) shows no QML errors from the plugin.
 Skip the deploy for documentation-only or test-only changes, and never deploy
 a tree whose checks fail. Report the deploy and restart in the final response.
