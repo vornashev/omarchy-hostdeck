@@ -8,7 +8,7 @@ and host scripts in one native QML/Quickshell panel.
 
 Plugin ID: `vornashev.hostdeck`
 
-![HostDeck wide layout: host list with pinned hosts and groups, and the detail pane with status, SSH and SFTP actions, AI CLIs, scripts, and service links](docs/screenshots/wide.png)
+![HostDeck wide layout: host list with pinned hosts and groups, and the detail pane with status, SSH and SFTP actions, AI CLIs, scripts, and service links](docs/preview.png)
 
 ## Features
 
