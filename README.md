@@ -1,36 +1,90 @@
 # HostDeck for Omarchy
 
-[Russian version](README.ru.md)
+English · [Русский](README.ru.md)
 
-HostDeck is an Omarchy bar plugin for managing remote development hosts. It
-combines SSH, SFTP, strict host-key verification, interactive AI CLI launchers,
-and host scripts in one native QML/Quickshell panel.
+![HostDeck: a remote host panel opened from the Omarchy bar, in wide and compact layouts](preview.png)
 
-Plugin ID: `vornashev.hostdeck`
+HostDeck is an Omarchy bar plugin for remote development hosts: a host catalog
+with SSH, SFTP, strict host-key verification, interactive AI CLI launchers,
+host scripts, and service links in one native QML/Quickshell panel.
 
-![HostDeck wide layout: host list with pinned hosts and groups, and the detail pane with status, SSH and SFTP actions, AI CLIs, scripts, and service links](./preview.png)
+Plugin ID: `vornashev.hostdeck` · License: [MIT](LICENSE)
+
+## Install
+
+```bash
+omarchy plugin add https://github.com/vornashev/omarchy-hostdeck --enable
+omarchy bar move vornashev.hostdeck --section right   # optional
+```
+
+Click the icon in the bar to open the panel, then **+ Host** to add a host.
+
+| Task | Command |
+| --- | --- |
+| Update | `omarchy plugin update vornashev.hostdeck` |
+| Remove | `omarchy plugin remove vornashev.hostdeck` (data is kept; see [Removal](#removal)) |
+
+The plugin never installs packages, runs install hooks, or edits
+`~/.ssh/config`. It writes to `~/.ssh/known_hosts` only after you explicitly
+trust a reviewed host key.
+
+**Upgrading from Remote Hosts.** Version 0.8 renamed the plugin from Remote
+Hosts (`vornashev.remote-hosts`) to HostDeck. Run
+`omarchy plugin remove vornashev.remote-hosts`, then install HostDeck as above;
+your data and saved secrets move to the new namespace on first start.
+
+### Requirements
+
+| | Needed for |
+| --- | --- |
+| Omarchy Shell / Quickshell, Python 3 (standard library) | The plugin itself |
+| `ssh`, `ssh-keyscan`, `ssh-keygen` (OpenSSH client) | Connections and host-key review |
+| Ghostty, Kitty, Alacritty, or foot | SSH, AI CLI, and script terminals |
+| `secret-tool` and an unlocked Secret Service (optional) | Saved passwords and key passphrases |
+| `sshfs`, FUSE 3, Nautilus (optional) | SFTP |
+| `wl-copy` (optional) | Copying SSH endpoints and link URLs |
+
+Remote AI CLIs must already be installed, authenticated, and available in the
+remote user's login-shell `PATH`. The plugin does not install remote software.
+
+## Contents
+
+- [Features](#features)
+- [Screenshots](#screenshots)
+- [Using HostDeck](#using-hostdeck): [panel and keyboard](#panel-and-keyboard),
+  [bar icon](#bar-icon), [service links](#service-links),
+  [host scripts](#host-scripts), [settings](#settings),
+  [screen-sharing privacy](#screen-sharing-privacy)
+- [Security and data](#security-and-data): [security model](#security-model),
+  [authentication secrets](#authentication-secrets),
+  [stored data and upgrades](#stored-data-and-upgrades)
+- [Removal](#removal)
+- [Development](#development)
 
 ## Features
 
-- Host catalog with groups, pins, notes, service links, endpoint availability, and up to 100 hosts.
-- Two layouts from one panel: a narrow list with an action dock, and a wide
-  list with a detail pane. **Auto** switches to wide when the screen leaves at
-  least 760 px for the panel.
-- Search across name, address, group, note, and links; Enter connects to the best match.
-- Latency uses theme colors only: neutral through 50 ms, accent from 51–99 ms,
-  and urgent from 100 ms. Statuses refresh host by host with a progress line.
-- SSH in Ghostty, Kitty, Alacritty, or foot.
-- SFTP mounts through SSHFS and opens them in Nautilus.
-- Per-host AI CLI selection and an optional project directory.
-- Explicitly saved per-host scripts, launched in a terminal over SSH on demand.
-- JSON import/export without passwords or claims that a saved secret exists.
-  The import preview lists every incoming host as new, updated, or skipped;
-  the export view shows a sample of the file for the chosen options. Pins are
-  never exported, and replacement imports keep the local pin.
-- Server-password and opt-in SSH key-passphrase storage through Secret Service only.
-- English UI by default, with Russian selectable in global settings.
-
-Supported interactive AI CLIs:
+- **Host catalog:** groups, pins, notes, service links, and up to 100 hosts.
+  Search covers name, address, group, note, and links; Enter connects to the
+  best match.
+- **Two layouts:** a narrow list with an action dock, or a wide list with a
+  detail pane. **Auto** picks wide when the screen leaves at least 760 px for
+  the panel.
+- **Status at a glance:** ping and SSH-port checks run host by host with a
+  progress line. Latency uses theme colors only: neutral through 50 ms, accent
+  from 51 to 99 ms, urgent from 100 ms.
+- **Connect:** SSH in Ghostty, Kitty, Alacritty, or foot; SFTP mounts through
+  SSHFS and opens in Nautilus.
+- **AI CLIs:** per-host selection of interactive agents with an optional
+  project directory (see the table below).
+- **Host scripts:** explicitly saved per-host scripts, run in a terminal over
+  SSH on demand.
+- **Import/export:** JSON without passwords or claims that a saved secret
+  exists. The import preview lists every incoming host as new, updated, or
+  skipped; the export view shows a sample of the file for the chosen options.
+  Pins are never exported, and replacement imports keep the local pin.
+- **Secrets:** server passwords and opt-in SSH key passphrases are stored in
+  Secret Service only.
+- **Privacy mode** for screen sharing, and an English or Russian interface.
 
 | Agent | Remote command |
 | --- | --- |
@@ -45,14 +99,16 @@ Supported interactive AI CLIs:
 | GitHub Copilot CLI | `copilot` |
 | Qwen Code | `qwen` |
 
-The commands and Goose's `session` argument are fixed in the backend. The
-AI launchers do not accept arbitrary executables, arguments, shell fragments,
-or auto-approval flags. User-created scripts are a separate, explicitly
-requested remote-execution feature; review their content before launching.
+The commands and Goose's `session` argument are fixed in the backend. The AI
+launchers do not accept arbitrary executables, arguments, shell fragments, or
+auto-approval flags. User-created scripts are a separate, explicitly requested
+remote-execution feature; review their content before launching.
 
 ## Screenshots
 
 All screenshots use synthetic hosts and documentation addresses.
+
+![Wide layout: host list with pinned hosts and groups, and the detail pane with status, SSH and SFTP actions, AI CLIs, scripts, and service links](docs/screenshots/wide.png)
 
 | Compact layout: AI CLI picker | Compact layout: service links |
 | --- | --- |
@@ -64,13 +120,15 @@ All screenshots use synthetic hosts and documentation addresses.
 
 ![Screen-sharing privacy mode with logins, addresses, link URLs, and script previews blurred](docs/screenshots/privacy.png)
 
-## Panel and keyboard
+## Using HostDeck
+
+### Panel and keyboard
 
 Opening the panel focuses the host list and restores the last selected host,
 so action keys work immediately. Typing any other character, or `/`, moves to
-search; Esc in an empty search field returns to the list.
-Click or use ↑↓ to select a host; the dock (narrow) or detail pane (wide)
-follows the selection. Hover and keyboard cursor share one highlight.
+search; Esc in an empty search field returns to the list. Click or use ↑↓ to
+select a host; the dock (narrow) or detail pane (wide) follows the selection.
+Hover and keyboard cursor share one highlight.
 
 | Key | Action |
 | --- | --- |
@@ -92,105 +150,10 @@ stops with a notification whose **Verify** action (`K`) opens the fingerprint
 review; after trusting the key, the launch continues. Pins are saved with the
 profile, while group tabs, collapse state, and selection are view state only.
 
-## Service links
+The copied SSH endpoint is `login@host`, with ` -p port` appended for a
+non-default port.
 
-Each host can keep up to 16 links to the services it runs, such as dashboards,
-admin panels, or APIs. Add them in **Links** in the host editor; **Add link**
-starts with `http://<host address>:` so only the port and path remain. A name is
-optional; an empty name shows the URL's host and port.
-
-The detail pane (wide) shows links as cards: a click opens the URL in the
-default browser through `xdg-open`, and the copy button that appears on hover
-copies the URL with `wl-copy`. In the narrow layout, the **Links** chip or `L`
-opens a picker where `1`–`9` open a link.
-
-Only `http://` and `https://` URLs without spaces or control characters are
-accepted. URLs with a login or password (`user:pass@host`) are rejected,
-because links are displayed and copied verbatim. Links are exported together
-with notes; do not put tokens in a URL that you plan to export.
-
-## Host scripts
-
-Select a host and choose **Add script** in its scripts list to enter a script or choose a local
-executable `.sh` under your home directory. The file must be owned by you,
-non-symlink, UTF-8, at most 16 KiB, and not writable by others. The plugin
-stores a private **copy** in `scripts.json` (0600); changing the original file
-will not change the saved script. Up to 32 scripts may be saved in total.
-Scripts are local to this installation and excluded from profile import/export.
-The file picker remembers its last successfully opened folder across shell
-restarts in private `script-browser.json` (0600); if that folder disappears,
-it opens your home directory instead. This path is never exported.
-List responses carry only each script's first command line (no shebang or
-comments, at most 120 characters) as a one-line preview; full contents are not
-returned. Opening an editor
-reads the saved copy over a local preview pipe; file-backed scripts display
-read-only content and remember their original path. Selecting a different
-`.sh` replaces that saved copy; renaming does not re-read the source file.
-Scripts saved before this feature still show their contents, but their original
-source path cannot be recovered. Manually entered scripts remain editable.
-Changing a host's address, port, or login
-invalidates access to its old scripts; delete the host to remove them.
-
-Click a script (or pick it with `S` — then a number in the narrow dock, or
-Enter in the wide detail pane) to open a terminal and run it remotely via SSH using
-`sh -s` or `bash -s` according to a supported shebang (`#!/bin/sh`,
-`#!/usr/bin/env sh`, `#!/bin/bash`, `#!/usr/bin/env bash`). Its contents travel through stdin, never command-line arguments or
-environment variables. A verified host key is required and strict checking is
-always enabled. This deliberately runs user-supplied code on the host: do not
-include passwords, tokens, or private keys in scripts. Scripts are not uploaded
-as persistent remote files. The terminal shows the remote exit result; closing
-it or losing the connection can interrupt execution.
-
-## Requirements
-
-- Omarchy Shell / Quickshell.
-- Python 3 standard library.
-- OpenSSH client tools: `ssh`, `ssh-keyscan`, and `ssh-keygen`.
-- One supported terminal.
-- Optional: `secret-tool` and an unlocked Secret Service for passwords or saved key passphrases.
-- Optional: `sshfs`, FUSE 3, and Nautilus for SFTP.
-- Optional: `wl-copy` for copying SSH endpoints. The copy is `login@host`, with ` -p port` appended for a non-default port.
-
-Remote AI CLIs must already be installed, authenticated, and available in the
-remote user's login-shell `PATH`. The plugin does not install remote software.
-
-## Installation
-
-```bash
-omarchy plugin add https://github.com/vornashev/omarchy-hostdeck --enable
-# Optional:
-omarchy bar move vornashev.hostdeck --section right
-```
-
-Update with `omarchy plugin update vornashev.hostdeck`. The plugin never
-installs packages, runs install hooks, or edits `~/.ssh/config`; it writes to
-`~/.ssh/known_hosts` only after you explicitly trust a reviewed host key.
-
-### Removal
-
-```bash
-omarchy plugin remove vornashev.hostdeck
-```
-
-Removing the plugin keeps your profiles, scripts, and settings in the data
-directory described under [Stored data and upgrades](#stored-data-and-upgrades),
-so a reinstall picks them up again. For a complete cleanup:
-
-1. Disconnect active SFTP mounts (bar icon right click → disconnect).
-2. Delete hosts that use a saved password or key passphrase in the panel;
-   deleting a host clears its Secret Service entries.
-3. Remove the plugin, then its data directory:
-   `rm -rf -- "${XDG_DATA_HOME:-$HOME/.local/share}/vornashev.hostdeck"`.
-
-Host keys you trusted stay in `~/.ssh/known_hosts`, like keys accepted by
-`ssh` itself.
-
-Version 0.8 renamed the plugin from Remote Hosts (`vornashev.remote-hosts`) to
-HostDeck. To upgrade, remove the old plugin with
-`omarchy plugin remove vornashev.remote-hosts` and add HostDeck as above; your
-data and saved secrets move to the new namespace on first start.
-
-## Bar icon
+### Bar icon
 
 The icon keeps its 27 px slot and shows one signal at a time, in priority
 order: a pinned host is unreachable (urgent badge), a status check is running
@@ -215,7 +178,64 @@ tooltip work before the panel is first opened; no host is contacted until you
 check. **Settings → Check pinned hosts** optionally re-checks pinned hosts
 every 5, 15, 30, or 60 minutes (off by default).
 
-## Language and terminal
+### Service links
+
+Each host can keep up to 16 links to the services it runs, such as dashboards,
+admin panels, or APIs. Add them in **Links** in the host editor; **Add link**
+starts with `http://<host address>:` so only the port and path remain. A name
+is optional; an empty name shows the URL's host and port.
+
+- **Wide layout:** links are cards in the detail pane. A click opens the URL
+  in the default browser through `xdg-open`; the copy button that appears on
+  hover copies it with `wl-copy`.
+- **Narrow layout:** the **Links** chip or `L` opens a picker where `1`–`9`
+  open a link.
+
+Only `http://` and `https://` URLs without spaces or control characters are
+accepted. URLs with a login or password (`user:pass@host`) are rejected,
+because links are displayed and copied verbatim. Links are exported together
+with notes; do not put tokens in a URL that you plan to export.
+
+### Host scripts
+
+**Adding.** Select a host and choose **Add script** in its scripts list, then
+enter a script or choose a local executable `.sh` under your home directory.
+The file must be owned by you, non-symlink, UTF-8, at most 16 KiB, and not
+writable by others.
+
+**Storage.**
+
+- The plugin stores a private **copy** in `scripts.json` (0600); changing the
+  original file does not change the saved script. Selecting a different `.sh`
+  replaces the copy; renaming does not re-read the source file.
+- Up to 32 scripts are saved in total. They are local to this installation and
+  excluded from profile import/export.
+- File-backed scripts open read-only and remember their original path;
+  manually entered scripts remain editable. Scripts saved before file sources
+  existed still show their contents, but their source path cannot be
+  recovered.
+- The script list shows only each script's first command line (no shebang or
+  comments, at most 120 characters); the editor reads the full saved copy over
+  a local preview pipe.
+- The file picker remembers its last opened folder across shell restarts in
+  private `script-browser.json` (0600) and falls back to your home directory if
+  the folder disappears. This path is never exported.
+- Changing a host's address, port, or login invalidates access to its old
+  scripts; delete the host to remove them.
+
+**Running.** Click a script, or pick it with `S` and then a number (narrow
+dock) or Enter (wide detail pane). A terminal opens and runs it remotely over
+SSH with `sh -s` or `bash -s`, according to a supported shebang (`#!/bin/sh`,
+`#!/usr/bin/env sh`, `#!/bin/bash`, `#!/usr/bin/env bash`). The contents travel
+through stdin, never command-line arguments or environment variables. A
+verified host key is required and strict checking is always enabled. Scripts
+are not uploaded as persistent remote files. The terminal shows the remote
+exit result; closing it or losing the connection can interrupt execution.
+
+This deliberately runs user-supplied code on the host: do not include
+passwords, tokens, or private keys in scripts.
+
+### Settings
 
 Open the catalog and select **Settings**:
 
@@ -226,36 +246,17 @@ Open the catalog and select **Settings**:
 
 The saved terminal applies to new SSH and AI CLI windows on every host. A
 terminal that is not installed can be picked but blocks **Save**; there is no
-silent fallback. SFTP remains a separate action. Language, layout, background check, and terminal settings are
+silent fallback. SFTP remains a separate action. All settings are
 machine-local, take effect after **Save**, and are excluded from profile
 import/export.
 
-## Authentication secrets
-
-Password profiles store the server password in Secret Service. Key / SSH-agent
-profiles may name an absolute private-key path and enable **Save key
-passphrase**. The passphrase is stored in a separate Secret Service namespace;
-the profile contains only the boolean setting and the key path.
-
-Enabling the option, creating the profile, or changing its address, port,
-login, or key path requires the passphrase again. An empty field keeps the
-existing passphrase only while all of those bindings remain unchanged.
-Disabling the option or deleting the host clears the matching passphrase after
-the profile change is safely published.
-
-Saved key passphrases are supplied only to terminal SSH, AI CLI SSH, and SFTP.
-Exports
-always reset the saved-passphrase setting; new imported hosts start with it
-disabled, while replacement imports preserve the local authentication,
-key path, and setting.
-
-## Screen-sharing privacy
+### Screen-sharing privacy
 
 Use the eye button in the panel header to blur logins and addresses in host
-rows, the dock and detail pane, link URLs, the editor, notifications, script previews,
-import and export previews, and host-key review. Endpoint
-and link URL fields cannot be edited while hidden, and a host key cannot be trusted until
-addresses are shown again.
+rows, the dock and detail pane, link URLs, the editor, notifications, script
+previews, import and export previews, and host-key review. Endpoint and link
+URL fields cannot be edited while hidden, and a host key cannot be trusted
+until addresses are shown again.
 
 This is a transient visual mode for screen sharing, not cryptographic
 redaction. It does not change saved profiles or the real endpoint copied from a
@@ -263,7 +264,51 @@ host, and it does not cover the clipboard, external terminals, or text in
 arbitrary names and notes. The mode is shared by panel instances until the
 shell process restarts; it is not saved to disk.
 
-## Stored data and upgrades
+## Security and data
+
+### Security model
+
+- Passwords and key passphrases never enter argv, environment variables,
+  profile JSON, logs, clipboard contents, or helper responses. Scripts must not
+  contain credentials.
+- Secret flow is stdin/pipe-based through a minimal askpass executable. It
+  accepts only the exact OpenSSH prompt bound to the saved profile endpoint
+  and, for a passphrase, the exact configured key path.
+- SSH uses fixed argv arrays and `-F /dev/null`; local commands and forwarding
+  are disabled.
+- Password authentication and saved key-passphrase delivery require
+  `StrictHostKeyChecking=yes`. The latter also disables password and
+  keyboard-interactive authentication.
+- A new host key must be reviewed by SHA256 fingerprint and explicitly trusted.
+- Conflicting, changed, revoked, or certificate-authority entries are never
+  replaced automatically.
+- The plugin does not read private-key contents.
+- Imported profiles never claim that a password or key passphrase is available.
+- Runtime files, mounts, ownership, permissions, symlinks, and file sizes are
+  validated before use.
+
+`ssh-keyscan` does not authenticate a server. Verify every displayed
+fingerprint through an independent trusted channel before accepting it.
+
+### Authentication secrets
+
+Password profiles store the server password in Secret Service. Key / SSH-agent
+profiles may name an absolute private-key path and enable **Save key
+passphrase**. The passphrase is stored in a separate Secret Service namespace;
+the profile contains only the boolean setting and the key path.
+
+- Enabling the option, creating the profile, or changing its address, port,
+  login, or key path requires the passphrase again. An empty field keeps the
+  existing passphrase only while all of those bindings remain unchanged.
+- Disabling the option or deleting the host clears the matching passphrase
+  after the profile change is safely published.
+- Saved key passphrases are supplied only to terminal SSH, AI CLI SSH, and
+  SFTP.
+- Exports always reset the saved-passphrase setting; new imported hosts start
+  with it disabled, while replacement imports preserve the local
+  authentication, key path, and setting.
+
+### Stored data and upgrades
 
 Profiles and global settings are stored under:
 
@@ -291,29 +336,24 @@ Hosts may carry an optional boolean `pinned`; older profiles without it load
 unchanged. Unknown fields, secret-bearing fields, duplicate JSON keys, invalid
 group references, and duplicate endpoint tuples are rejected.
 
-## Security model
+## Removal
 
-- Passwords and key passphrases never enter argv, environment variables,
-  profile JSON, logs, clipboard contents, or helper responses. Scripts must not
-  contain credentials.
-- Secret flow is stdin/pipe-based through a minimal askpass executable. It
-  accepts only the exact OpenSSH prompt bound to the saved profile endpoint
-  and, for a passphrase, the exact configured key path.
-- SSH uses fixed argv arrays and `-F /dev/null`; local commands and forwarding
-  are disabled.
-- Password authentication and saved key-passphrase delivery require
-  `StrictHostKeyChecking=yes`. The latter also disables password and
-  keyboard-interactive authentication.
-- A new host key must be reviewed by SHA256 fingerprint and explicitly trusted.
-- Conflicting, changed, revoked, or certificate-authority entries are never
-  replaced automatically.
-- The plugin does not read private-key contents.
-- Imported profiles never claim that a password or key passphrase is available.
-- Runtime files, mounts, ownership, permissions, symlinks, and file sizes are
-  validated before use.
+```bash
+omarchy plugin remove vornashev.hostdeck
+```
 
-`ssh-keyscan` does not authenticate a server. Verify every displayed
-fingerprint through an independent trusted channel before accepting it.
+Removing the plugin keeps your profiles, scripts, and settings in the
+[data directory](#stored-data-and-upgrades), so a reinstall picks them up
+again. For a complete cleanup:
+
+1. Disconnect active SFTP mounts (bar icon right click → disconnect).
+2. Delete hosts that use a saved password or key passphrase in the panel;
+   deleting a host clears its Secret Service entries.
+3. Remove the plugin, then its data directory:
+   `rm -rf -- "${XDG_DATA_HOME:-$HOME/.local/share}/vornashev.hostdeck"`.
+
+Host keys you trusted stay in `~/.ssh/known_hosts`, like keys accepted by
+`ssh` itself.
 
 ## Development
 
