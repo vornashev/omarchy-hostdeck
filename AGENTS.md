@@ -45,6 +45,9 @@ repository constraints, then carry the user's requested work to completion.
 - `tests/` uses temporary data and mocked external processes/network access.
 - `scripts/` holds development tooling (`deploy-local`, `qml-lint`); it is not
   shipped with the installed plugin.
+- `preview.png` (Omarchy plugin marketplace preview) and `docs/screenshots/`
+  are README images captured from synthetic hosts only; they are not deployed
+  locally.
 - User-facing text defaults to English; Russian is the supported alternate
   language. Every visible string goes through `root.t()` and needs a Russian
   entry in `state/I18n.qml`; keep `README.md` and `README.ru.md` in sync.
@@ -122,7 +125,7 @@ scripts/deploy-local
 ```
 
 The script installs only files git tracks or would track (minus `AGENTS.md`,
-`scripts/`, and `tests/`), so keep local design or tooling files gitignored. It
+`docs/`, `preview.png`, `scripts/`, and `tests/`), so keep local design or tooling files gitignored. It
 restarts the shell and waits for `omarchy-shell shell ping`. Then confirm the
 user journal
 (`journalctl --user --since "-1 min"`) shows no QML errors from the plugin.

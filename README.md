@@ -8,6 +8,8 @@ and host scripts in one native QML/Quickshell panel.
 
 Plugin ID: `vornashev.hostdeck`
 
+![HostDeck wide layout: host list with pinned hosts and groups, and the detail pane with status, SSH and SFTP actions, AI CLIs, scripts, and service links](preview.png)
+
 ## Features
 
 - Host catalog with groups, pins, notes, service links, endpoint availability, and up to 100 hosts.
@@ -47,6 +49,20 @@ The commands and Goose's `session` argument are fixed in the backend. The
 AI launchers do not accept arbitrary executables, arguments, shell fragments,
 or auto-approval flags. User-created scripts are a separate, explicitly
 requested remote-execution feature; review their content before launching.
+
+## Screenshots
+
+All screenshots use synthetic hosts and documentation addresses.
+
+| Compact layout: AI CLI picker | Compact layout: service links |
+| --- | --- |
+| ![Compact layout with the AI CLI picker open in the action dock](docs/screenshots/compact-ai.png) | ![Compact layout with the service link picker open in the action dock](docs/screenshots/compact-links.png) |
+
+| Host editor | Import / export |
+| --- | --- |
+| ![Host editor with connection, authentication, and AI CLI settings](docs/screenshots/editor.png) | ![Export view with options and a file preview](docs/screenshots/export.png) |
+
+![Screen-sharing privacy mode with logins, addresses, link URLs, and script previews blurred](docs/screenshots/privacy.png)
 
 ## Panel and keyboard
 
@@ -146,10 +162,28 @@ omarchy plugin add https://github.com/vornashev/omarchy-hostdeck --enable
 omarchy bar move vornashev.hostdeck --section right
 ```
 
-Update with `omarchy plugin update vornashev.hostdeck` and uninstall with
-`omarchy plugin remove vornashev.hostdeck`. Removing the plugin keeps your
-profiles and settings in the data directory described under
-[Stored data and upgrades](#stored-data-and-upgrades).
+Update with `omarchy plugin update vornashev.hostdeck`. The plugin never
+installs packages, runs install hooks, or edits `~/.ssh/config`; it writes to
+`~/.ssh/known_hosts` only after you explicitly trust a reviewed host key.
+
+### Removal
+
+```bash
+omarchy plugin remove vornashev.hostdeck
+```
+
+Removing the plugin keeps your profiles, scripts, and settings in the data
+directory described under [Stored data and upgrades](#stored-data-and-upgrades),
+so a reinstall picks them up again. For a complete cleanup:
+
+1. Disconnect active SFTP mounts (bar icon right click → disconnect).
+2. Delete hosts that use a saved password or key passphrase in the panel;
+   deleting a host clears its Secret Service entries.
+3. Remove the plugin, then its data directory:
+   `rm -rf -- "${XDG_DATA_HOME:-$HOME/.local/share}/vornashev.hostdeck"`.
+
+Host keys you trusted stay in `~/.ssh/known_hosts`, like keys accepted by
+`ssh` itself.
 
 Version 0.8 renamed the plugin from Remote Hosts (`vornashev.remote-hosts`) to
 HostDeck. To upgrade, remove the old plugin with
@@ -296,9 +330,9 @@ omarchy plugin enable vornashev.hostdeck   # first time only
 
 `scripts/deploy-local` validates the source and replaces
 `~/.config/omarchy/plugins/vornashev.hostdeck` with the files git tracks
-(or would track), leaving out `AGENTS.md`, `scripts/`, and `tests/`. It sets the
-askpass executable bit, restarts the shell, and waits until it answers. It does
-not install packages or edit `~/.ssh/config`.
+(or would track), leaving out `AGENTS.md`, `docs/`, `preview.png`, `scripts/`,
+and `tests/`. It sets the askpass executable bit, restarts the shell, and waits
+until it answers. It does not install packages or edit `~/.ssh/config`.
 
 Tests use synthetic endpoints, temporary directories, and fake external
 programs. They do not connect to real hosts or read real credentials, keys,

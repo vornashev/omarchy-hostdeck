@@ -18,7 +18,7 @@ stage=$(mktemp -d)
 trap 'rm -rf -- "$stage"' EXIT
 git -C "$root" ls-files -z --cached --others --exclude-standard \
   | while IFS= read -r -d '' file; do
-      case $file in .gitignore|AGENTS.md|scripts/*|tests/*) continue ;; esac
+      case $file in .gitignore|AGENTS.md|docs/*|preview.png|scripts/*|tests/*) continue ;; esac
       [[ -e $root/$file ]] && printf '%s\0' "$file"
     done \
   | rsync -a --from0 --files-from=- "$root/" "$stage/"
