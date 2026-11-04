@@ -982,9 +982,17 @@ class ClientTests(Isolated):
         self.assertNotIn("SYNTHETIC-sftp-password", " ".join(args))
         args = h.sshfs_argv(profile(keyPath="/home/tema/My Key", remoteFolder="/srv/data"), mountpoint)
         ssh_command = next(value for value in args if value.startswith("ssh_command="))
-        self.assertIn("'/home/tema/My Key'", ssh_command)
         self.assertIn("IdentitiesOnly=yes", ssh_command)
+        self.assertIn('IdentityFile="/home/tema/My Key"', args)
         self.assertEqual(args[-2], "tema@example.test:/srv/data")
+        # SSHFS splits ssh_command on spaces and libfuse splits -o on commas:
+        # an imported key path must not become extra SSH or SSHFS options.
+        args = h.sshfs_argv(profile(keyPath="/home/tema/k -E /home/tema/.bashrc,allow_other"),
+                            mountpoint)
+        ssh_command = next(value for value in args if value.startswith("ssh_command="))
+        self.assertNotIn("-E", ssh_command.split())
+        self.assertNotIn("allow_other", args)
+        self.assertIn(r'IdentityFile="/home/tema/k -E /home/tema/.bashrc\,allow_other"', args)
         args = h.sshfs_argv(profile(
             keyPath="/home/tema/My Key", saveKeyPassphrase=True), mountpoint)
         ssh_command = next(value for value in args if value.startswith("ssh_command="))

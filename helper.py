@@ -1490,9 +1490,10 @@ def unmount_sftp(d):
 
 def sshfs_argv(d, mountpoint):
     source = sftp_source(d)
-    # SSHFS accepts only its own -o options. Put OpenSSH controls in the
-    # documented ssh_command override; shlex.join preserves a key path with
-    # spaces without invoking a local shell or accepting free-form input.
+    # SSHFS splits ssh_command on spaces and ignores shell quoting, so it holds
+    # only fixed tokens. The key path goes through SSHFS's IdentityFile option:
+    # libfuse needs its comma separator escaped, and ssh parses the value as a
+    # config line, so it is double-quoted (safe_path excludes quotes and backslashes).
     ssh = ["ssh", "-F", "/dev/null", "-o", "StrictHostKeyChecking=yes",
            "-o", "PermitLocalCommand=no", "-o", "ClearAllForwardings=yes",
            "-o", "ConnectTimeout=10", "-o", "ServerAliveInterval=30",
@@ -1505,11 +1506,14 @@ def sshfs_argv(d, mountpoint):
             ssh += ["-o", "PreferredAuthentications=publickey", "-o", "PasswordAuthentication=no",
                     "-o", "KbdInteractiveAuthentication=no", "-o", "NumberOfPasswordPrompts=1"]
         if d["keyPath"]:
-            ssh += ["-i", d["keyPath"], "-o", "IdentitiesOnly=yes"]
-    args = ["sshfs", "-o", "ssh_command=" + shlex.join(ssh),
+            ssh += ["-o", "IdentitiesOnly=yes"]
+    args = ["sshfs", "-o", "ssh_command=" + " ".join(ssh),
             "-p", str(d["port"]), "-o", "idmap=user"]
     if d["auth"] == "password":
         args += ["-o", "password_stdin"]
+    elif d["keyPath"]:
+        key = d["keyPath"].replace(",", "\\,")
+        args += ["-o", f'IdentityFile="{key}"']
     return args + [source, str(mountpoint)]
 
 
