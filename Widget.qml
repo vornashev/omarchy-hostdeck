@@ -37,7 +37,7 @@ Ui.Panel {
     readonly property var systemHost: deviceById(systemHostId)
     readonly property var systemResult: matchingSystemInfo(systemHost)
     readonly property string fileManagerName: globalConfig.fileManager === "custom" ? globalConfig.fileExecutable
-        : (globalConfig.fileManager === "strata" ? "Strata" : "Nautilus")
+        : (fileManagers.find(m => m.value === globalConfig.fileManager)?.label || "Nautilus")
     property var scripts: ({})
     property string scriptHostId: ""
     property string scriptId: ""

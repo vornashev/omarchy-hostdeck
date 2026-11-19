@@ -65,7 +65,7 @@ LEGACY_LAUNCH_MODES = {"shell", "custom", *AI_COMMANDS}
 PANEL_LAYOUTS = ("auto", "compact", "wide")
 # Minutes between background checks of pinned hosts; 0 keeps them manual.
 WATCH_INTERVALS = (0, 5, 15, 30, 60)
-FILE_MANAGERS = {"nautilus": "Nautilus", "strata": "Strata"}
+FILE_MANAGERS = {"nautilus": "Nautilus", "strata": "Strata", "flea": "Flea"}
 SYSTEM_FIELDS = ("os", "kernel", "host", "cpu", "memory", "disk")
 MAX_SYSTEM_BYTES = 256 * 1024
 SYSTEM_TIMEOUT = 30

@@ -72,14 +72,16 @@ class FileAppTests(Isolated):
 
     def test_saved_file_manager_is_used_when_opening_files_from_catalog(self):
         with patch.object(h.shutil, "which", return_value="/synthetic/app"):
-            self.call(op="saveSettings", settings=self.settings(fileManager="strata"))
+            options = self.call(op="getSettings")["fileManagers"]
+            self.assertIn({"value": "flea", "label": "Flea", "available": True}, options)
+            self.call(op="saveSettings", settings=self.settings(fileManager="flea"))
         with patch.dict(os.environ, {"XDG_RUNTIME_DIR": str(self.root)}), \
              patch.object(h.shutil, "which", return_value="/synthetic/app"), \
              patch.object(h, "has_known_host_entry", return_value=True), \
              patch.object(h, "sftp_mount_kind", return_value="mounted"), \
              patch.object(h.subprocess, "Popen") as spawn:
             result = self.call(op="launch", id=ID, client="sftp")
-            self.assertEqual(spawn.call_args.args[0], ["strata", str(h.sftp_mountpoint(profile()))])
+            self.assertEqual(spawn.call_args.args[0], ["flea", str(h.sftp_mountpoint(profile()))])
         self.assertEqual(result["sftpStates"][ID]["state"], "mounted")
 
     def test_missing_app_cannot_mount_or_launch_fallback(self):

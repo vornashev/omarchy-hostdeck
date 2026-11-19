@@ -10,7 +10,7 @@ host scripts, and service links in one native QML/Quickshell panel.
 
 Plugin ID: `vornashev.hostdeck` · License: [MIT](LICENSE)
 
-**New in 0.9.0** — Host cards can show cached Fastfetch data with per-host fields and refresh schedules. The System page also offers to install Fastfetch when missing. SFTP now supports a configurable file manager and direct SFTP URLs.
+**New in 0.9.1** — select **Flea** in Settings → File manager to open SSHFS mounts in Flea. [Changelog](CHANGELOG.md)
 
 ## Install
 
@@ -26,7 +26,7 @@ Click the icon in the bar to open the panel, then **+ Host** to add a host.
 | Update | `omarchy plugin update vornashev.hostdeck` |
 | Remove | `omarchy plugin remove vornashev.hostdeck` (data is kept; see [Removal](#removal)) |
 
-The plugin never installs packages, runs install hooks, or edits
+Installing HostDeck does not install dependencies, run install hooks, or edit
 `~/.ssh/config`. It writes to `~/.ssh/known_hosts` only after you explicitly
 trust a reviewed host key.
 
@@ -48,7 +48,7 @@ your data and saved secrets move to the new namespace on first start.
 | `wl-copy` (optional) | Copying SSH endpoints and link URLs |
 
 Remote AI CLIs must already be installed, authenticated, and available in the
-remote user's login-shell `PATH`. The plugin does not install remote software.
+remote user's login-shell `PATH`.
 
 ## Contents
 
@@ -77,7 +77,7 @@ remote user's login-shell `PATH`. The plugin does not install remote software.
   progress line. Latency uses theme colors only: neutral through 50 ms, accent
   from 51 to 99 ms, urgent from 100 ms.
 - **Connect:** SSH in Ghostty, Kitty, Alacritty, or foot; SFTP mounts through
-  SSHFS and opens in Nautilus, Strata, or a configured app. An optional direct
+  SSHFS and opens in Nautilus, Strata, Flea, or a configured app. An optional direct
   SFTP URL mode lets the app handle its own connection.
 - **System details:** collect OS, kernel, hardware model, CPU, memory, and disk
   usage over SSH. Each host has a local snapshot, a refresh mode and a choice of fields for its card.
@@ -250,7 +250,7 @@ Open the catalog and select **Settings**:
 - **Panel layout:** Auto, Compact (narrow), or Wide.
 - **Check pinned hosts:** a − / + stepper over Off, 5, 15, 30, and 60 minutes.
 - **Default terminal:** Ghostty, Kitty, Alacritty, or foot.
-- **File manager:** Nautilus (the existing default), Strata, or a custom app
+- **File manager:** Nautilus (the existing default), Strata, Flea, or a custom app
   named in `PATH`. Custom arguments are entered one per line, with exactly
   one standalone `{target}` line. They are passed literally as argv, without
   shell interpretation; do not put credentials in arguments.
@@ -303,9 +303,9 @@ refreshes even with the panel closed at a per-host interval of 5, 15 (default),
 30 or 60 minutes. **Manual** uses the refresh button or **R**. Failed refreshes
 preserve the last snapshot. Automatic retries wait until the next interval.
 
-On the System page, check the categories to show in the host card. Changes save
+On the System page, select the categories to show in the host card. Changes save
 immediately. **Use global field settings** restores inheritance. The System page
-always shows all six categories, with one checkbox for all disks. Hardware and
+always shows all six categories, with one toggle for all disks. Hardware and
 disk details are blurred in privacy mode. Snapshots and per-host preferences
 are excluded from export. Changing the SSH identity clears the snapshot, and
 deleting the host clears both records.
@@ -314,7 +314,7 @@ deleting the host clears both records.
 
 In **Mount with SSHFS**, HostDeck retains authentication, strict host-key
 verification, mount tracking, and disconnect controls. Nautilus receives a local
-file URI; Strata and custom apps receive the absolute local mount path. An app
+file URI; Strata, Flea and custom apps receive the absolute local mount path. An app
 launch failure leaves an existing mount intact so it can be opened again or
 disconnected.
 
