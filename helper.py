@@ -17,6 +17,7 @@ import re
 import select
 import shlex
 import shutil
+import signal
 import socket
 import stat
 import subprocess
@@ -64,6 +65,35 @@ LEGACY_LAUNCH_MODES = {"shell", "custom", *AI_COMMANDS}
 PANEL_LAYOUTS = ("auto", "compact", "wide")
 # Minutes between background checks of pinned hosts; 0 keeps them manual.
 WATCH_INTERVALS = (0, 5, 15, 30, 60)
+FILE_MANAGERS = {"nautilus": "Nautilus", "strata": "Strata"}
+SYSTEM_FIELDS = ("os", "kernel", "host", "cpu", "memory", "disk")
+MAX_SYSTEM_BYTES = 256 * 1024
+SYSTEM_TIMEOUT = 30
+# No user configuration or user-supplied command is evaluated on the host.
+FASTFETCH_MISSING_MARKER = "HOSTDECK_FASTFETCH_MISSING"
+SYSTEM_COMMAND = "sh -c " + shlex.quote(
+    f"command -v fastfetch >/dev/null 2>&1 || {{ printf '%s\\n' {FASTFETCH_MISSING_MARKER}; exit 127; }}; "
+    "exec fastfetch -c none --structure Host:CPU:Memory:Disk:OS:Kernel --format json"
+)
+FASTFETCH_INSTALL_COMMAND = "sh -c " + shlex.quote("""\
+if command -v fastfetch >/dev/null 2>&1; then exit 0; fi
+if command -v apt-get >/dev/null 2>&1; then set -- apt-get install fastfetch
+elif command -v dnf >/dev/null 2>&1; then set -- dnf install fastfetch
+elif command -v pacman >/dev/null 2>&1; then set -- pacman -S --needed fastfetch
+elif command -v zypper >/dev/null 2>&1; then set -- zypper install fastfetch
+elif command -v apk >/dev/null 2>&1; then set -- apk add fastfetch
+else exit 70
+fi
+uid=$(id -u) || exit 77
+if [ "$uid" != 0 ]; then
+    if command -v sudo >/dev/null 2>&1; then set -- sudo "$@"
+    elif command -v doas >/dev/null 2>&1; then set -- doas "$@"
+    else exit 77
+    fi
+fi
+"$@" || exit 1
+command -v fastfetch >/dev/null 2>&1 || exit 69
+""")
 # VS Code Remote-SSH is parked until it is finished; launch requests for it are
 # refused. vscode_argv stays for the follow-up, together with Widget.qml's
 # vscodeEnabled flag.
@@ -76,7 +106,10 @@ DEVICE_FIELDS = {"id", "name", "host", "port", "login", "group", "note", "auth",
 class Error(Exception):
     """Only these fixed, non-secret messages may cross the UI boundary."""
 
+
 ENGLISH_MESSAGES = {
+    "Некорректные настройки Fastfetch": "Invalid Fastfetch preferences",
+    "Некорректный снимок Fastfetch": "Invalid Fastfetch snapshot",
     "Некорректный идентификатор": "Invalid identifier",
     "IPv6 zone ID не поддерживается": "IPv6 zone IDs are not supported",
     "IPv6: используйте адрес без квадратных скобок": "IPv6: enter the address without brackets",
@@ -186,12 +219,10 @@ ENGLISH_MESSAGES = {
     "SFTP: размонтирование не выполнено; закройте открытые файлы": "SFTP: unmount failed; close open files",
     "SFTP отключён": "SFTP disconnected",
     "SFTP: sshfs не установлен; выполните в терминале: omarchy pkg add sshfs": "SFTP: sshfs is not installed; run in a terminal: omarchy pkg add sshfs",
-    "SFTP: Nautilus не найден": "SFTP: Nautilus was not found",
     "SFTP: точка занята посторонним mount": "SFTP: mount point is occupied by another mount",
     "SFTP: подключение не выполнено или превысило время ожидания": "SFTP: connection failed or timed out",
     "SFTP: SSHFS отклонил подключение; проверьте пароль, ключ и SFTP на сервере": "SFTP: SSHFS rejected the connection; check the password, key, and server SFTP support",
     "SFTP: SSHFS завершился без точки монтирования": "SFTP: SSHFS exited without a mount point",
-    "SFTP подключён через SSHFS и открыт в Nautilus": "SFTP mounted using SSHFS and opened in Nautilus",
     "VS Code не найден": "VS Code was not found",
     "VS Code: не удалось проверить Remote-SSH": "VS Code: could not verify Remote-SSH",
     "VS Code: установите официальное расширение Remote-SSH": "VS Code: install the official Remote-SSH extension",
@@ -207,7 +238,7 @@ ENGLISH_MESSAGES = {
     "secret-tool не найден": "secret-tool was not found",
     "Требуется JSON-объект": "A JSON object is required",
     "Проверка принимает только адрес и SSH-порт": "The check accepts only address and SSH port",
-    "Настройки принимают только параметры терминала": "Settings accept only terminal, language, layout, and background check parameters",
+    "Настройки принимают только параметры терминала": "Settings requests accept only the settings object",
     "Настройки сохранены": "Settings saved",
     "Устройство сохранено": "Host saved",
     "Устройство удалено": "Host deleted",
@@ -265,6 +296,32 @@ ENGLISH_MESSAGES = {
     "Неизвестные аргументы": "Unknown arguments",
     "Запрос превышает 1 МиБ": "Request exceeds 1 MiB",
     "Операция не выполнена: проверьте данные, права и зависимости": "Operation failed; check the input, permissions, and dependencies",
+    "Неизвестный файловый менеджер": "Unknown file manager",
+    "Неизвестный режим SFTP": "Unknown SFTP mode",
+    "Укажите имя приложения из PATH": "Enter an application name from PATH",
+    "Аргументы: до 16 строк и одна строка {target}": "Arguments: up to 16 lines with exactly one {target} line",
+    "Некорректный список сведений о системе": "Invalid system details selection",
+    "Выбранный файловый менеджер не найден в PATH": "Selected file manager was not found in PATH",
+    "Не удалось открыть файловый менеджер; подключённый каталог можно открыть повторно": "Could not open the file manager; an existing mount can be opened again",
+    "SFTP открыт в приложении; вход и проверка ключа сервера выполняются в нём": "SFTP opened in app; authentication and host-key verification are handled there",
+    "SFTP подключён через SSHFS и открыт в файловом менеджере": "SFTP mounted using SSHFS and opened in the file manager",
+    "Не удалось запустить сбор сведений о системе": "Could not start system details collection",
+    "Не удалось прочитать сведения о системе": "Could not read system details",
+    "Сбор сведений о системе превысил 30 секунд": "System details collection exceeded 30 seconds",
+    "Ответ fastfetch превышает 256 КиБ": "Fastfetch response exceeds 256 KiB",
+    "Не удалось получить сведения; проверьте SSH, авторизацию и версию fastfetch": "Could not get system details; check SSH, authentication, and the fastfetch version",
+    "fastfetch вернул некорректные сведения о системе": "Fastfetch returned invalid system details",
+    "fastfetch не вернул поддерживаемых показателей": "Fastfetch returned no supported system fields",
+    "Сначала проверьте ключ сервера для получения сведений о системе": "Verify the host key before collecting system details",
+    "Сведения о системе принимают только id хоста": "System details requests accept only the host ID",
+    "Сбор сведений о системе отменён": "System details collection cancelled",
+    "Некорректный запрос установки Fastfetch": "Invalid Fastfetch installation request",
+    "Сначала проверьте ключ сервера для установки Fastfetch": "Verify the host key before installing Fastfetch",
+    "Fastfetch доступен. Обновите сведения о системе в HostDeck.": "Fastfetch is available. Refresh system details in HostDeck.",
+    "На сервере не найден поддерживаемый менеджер пакетов.": "No supported package manager was found on the host.",
+    "Для установки нужны права root, sudo или doas.": "Installation requires root, sudo, or doas.",
+    "Fastfetch по-прежнему не найден в PATH удалённого хоста.": "Fastfetch is still missing from the remote host's PATH.",
+    "Не удалось установить Fastfetch. Проверьте сообщения SSH и менеджера пакетов выше.": "Could not install Fastfetch. Check the SSH and package manager output above.",
 }
 
 LABELS_EN = {
@@ -506,7 +563,8 @@ def atomic_text(path, value):
 
 def global_settings(value):
     require(isinstance(value, dict) and {"version", "defaultTerminal"} <= set(value)
-            <= {"version", "defaultTerminal", "language", "layout", "watchMinutes"},
+            <= {"version", "defaultTerminal", "language", "layout", "watchMinutes",
+                "fileManager", "fileMode", "fileExecutable", "fileArguments", "systemFields"},
             "Некорректные поля глобальных настроек")
     require(type(value["version"]) is int and value["version"] == 1, "Неизвестная версия настроек")
     require(isinstance(value["defaultTerminal"], str) and value["defaultTerminal"] in TERMINALS,
@@ -517,12 +575,30 @@ def global_settings(value):
     require(layout in PANEL_LAYOUTS, "Неизвестная раскладка панели")
     watch = value.get("watchMinutes", 0)
     require(type(watch) is int and watch in WATCH_INTERVALS, "Неизвестный интервал фоновой проверки")
+    manager = value.get("fileManager", "nautilus")
+    require(isinstance(manager, str) and manager in (*FILE_MANAGERS, "custom"), "Неизвестный файловый менеджер")
+    mode = value.get("fileMode", "mount")
+    require(isinstance(mode, str) and mode in ("mount", "uri"), "Неизвестный режим SFTP")
+    executable = executable_name(value.get("fileExecutable", ""))
+    require(manager != "custom" or executable, "Укажите имя приложения из PATH")
+    arguments = value.get("fileArguments", ["{target}"])
+    require(isinstance(arguments, list) and 1 <= len(arguments) <= 16
+            and all(isinstance(a, str) and len(a) <= 512 and all(ord(c) >= 32 and ord(c) != 127 for c in a)
+                    and (a == "{target}" or not any(c in a for c in "{}")) for a in arguments)
+            and arguments.count("{target}") == 1, "Аргументы: до 16 строк и одна строка {target}")
+    fields = value.get("systemFields", list(SYSTEM_FIELDS))
+    require(isinstance(fields, list) and len(fields) <= len(SYSTEM_FIELDS)
+            and all(isinstance(f, str) and f in SYSTEM_FIELDS for f in fields)
+            and len(fields) == len(set(fields)), "Некорректный список сведений о системе")
     return {"version": 1, "defaultTerminal": value["defaultTerminal"], "language": language, "layout": layout,
-            "watchMinutes": watch}
+            "watchMinutes": watch, "fileManager": manager, "fileMode": mode, "fileExecutable": executable,
+            "fileArguments": arguments, "systemFields": fields}
 
 
 def settings_response(value):
     return {"globalSettings": value,
+            "fileManagers": [{"value": name, "label": label, "available": shutil.which(name) is not None}
+                             for name, label in FILE_MANAGERS.items()],
             "terminals": [{"value": name, "label": label, "available": shutil.which(argv[0]) is not None}
                           for name, (label, argv) in TERMINALS.items()]}
 
@@ -723,11 +799,40 @@ class Store:
             return document(decode(src.read(MAX_BYTES + 1)))
 
     def save(self, data):
-        atomic_write(self.path, document(data))
+        data = document(data)
+        previous = self.load()
+        current = {d["id"]: d for d in data["devices"]}
+        for old in previous["devices"]:
+            new = current.get(old["id"])
+            if new is None or system_binding(old) != system_binding(new):
+                self.remove_system_record(old, "snapshot")
+            if new is None:
+                self.remove_system_record(old, "preferences")
+        atomic_write(self.path, data)
+
+    def system_path(self, d, kind):
+        return self.root / f"system-{identifier(d['id'])}-{kind}.json"
+
+    def remove_system_record(self, d, kind):
+        path = self.system_path(d, kind)
+        if path.exists() or path.is_symlink():
+            check_file(path)
+            path.unlink()
+
+    def system_record(self, d, kind):
+        path = self.system_path(d, kind)
+        if not path.exists() and not path.is_symlink():
+            return None
+        check_file(path)
+        with path.open(encoding="utf-8") as src:
+            value = decode(src.read(MAX_BYTES + 1))
+        if kind == "preferences":
+            return system_preferences(value)
+        return cached_snapshot(value, d)
 
     def load_settings(self):
         if not self.settings_path.exists() and not self.settings_path.is_symlink():
-            return {"version": 1, "defaultTerminal": "ghostty", "language": "en", "layout": "auto", "watchMinutes": 0}
+            return global_settings({"version": 1, "defaultTerminal": "ghostty"})
         check_file(self.settings_path)
         with self.settings_path.open(encoding="utf-8") as src:
             return global_settings(decode(src.read(MAX_BYTES + 1)))
@@ -1517,12 +1622,43 @@ def sshfs_argv(d, mountpoint):
     return args + [source, str(mountpoint)]
 
 
-def mount_sftp(d):
+def file_manager_argv(settings, target):
+    settings = global_settings(settings)
+    manager = settings["fileManager"]
+    executable = settings["fileExecutable"] if manager == "custom" else manager
+    require(shutil.which(executable) is not None, "Выбранный файловый менеджер не найден в PATH")
+    arguments = settings["fileArguments"] if manager == "custom" else ["{target}"]
+    return [executable, *(target if a == "{target}" else a for a in arguments)]
+
+
+def open_files(argv):
+    try:
+        subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL, start_new_session=True, close_fds=True)
+    except OSError:
+        raise Error("Не удалось открыть файловый менеджер; подключённый каталог можно открыть повторно") from None
+
+
+def sftp_uri(d):
+    host = f"[{d['host']}]" if ":" in d["host"] else d["host"]
+    path = d["remoteFolder"] or "/"
+    return f"sftp://{d['login']}@{host}:{d['port']}{urllib.parse.quote(path, safe='/')}"
+
+
+def mount_sftp(d, settings=None):
     d = device(d)
+    settings = global_settings(settings or {"version": 1, "defaultTerminal": "ghostty"})
+    # Resolve the app before mounting so a missing app cannot create a new mount.
+    if settings["fileMode"] == "uri":
+        # Do not hide an existing managed mount behind a different connection.
+        require_sftp_disconnected(d)
+        open_files(file_manager_argv(settings, sftp_uri(d)))
+        return "SFTP открыт в приложении; вход и проверка ключа сервера выполняются в нём"
     require(shutil.which("sshfs") is not None,
             "SFTP: sshfs не установлен; выполните в терминале: omarchy pkg add sshfs")
-    require(shutil.which("nautilus") is not None, "SFTP: Nautilus не найден")
     mountpoint = sftp_mountpoint(d)
+    target = mountpoint.as_uri() if settings["fileManager"] == "nautilus" else str(mountpoint)
+    argv = file_manager_argv(settings, target)
     kind = sftp_mount_kind(d)
     require(kind != "foreign", "SFTP: точка занята посторонним mount")
     if kind == "unmounted":
@@ -1547,10 +1683,8 @@ def mount_sftp(d):
                 mountpoint.rmdir()
             raise Error("SFTP: SSHFS отклонил подключение; проверьте пароль, ключ и SFTP на сервере")
         require(sftp_mount_kind(d) == "mounted", "SFTP: SSHFS завершился без точки монтирования")
-    subprocess.Popen(["nautilus", mountpoint.as_uri()], stdin=subprocess.DEVNULL,
-                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                     start_new_session=True, close_fds=True)
-    return "SFTP подключён через SSHFS и открыт в Nautilus"
+    open_files(argv)
+    return "SFTP подключён через SSHFS и открыт в файловом менеджере"
 
 
 def vscode_extension_available():
@@ -1619,10 +1753,10 @@ def launch_argv(d, client, agent=None):
     raise Error("Неизвестный клиент")
 
 
-def launch(d, client, agent=None):
+def launch(d, client, agent=None, settings=None):
     if client == "sftp":
         require(agent is None, "AI CLI запускается только в терминале")
-        return mount_sftp(d)
+        return mount_sftp(d, settings)
     args = launch_argv(d, client, agent)
     require(shutil.which(args[0]) is not None, "Клиент не найден в PATH")
     subprocess.Popen(args, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
@@ -1706,6 +1840,234 @@ def terminal_script(host_id, script_id):
     # Script bytes only cross stdin; never argv, environment or a helper response.
     result = subprocess.run(args, input=entry["body"].encode("utf-8"), env=env)
     return result.returncode
+
+
+def system_binding(d):
+    return [d["host"], d["port"], d["login"], d["auth"], d["keyPath"], d["saveKeyPassphrase"]]
+
+
+def strict_ssh_argv(d, options, command):
+    args = ["StrictHostKeyChecking=yes" if a == "StrictHostKeyChecking=ask" else a for a in ssh_argv(d)]
+    separator = args.index("--")
+    return args[:separator] + options + args[separator:] + [command]
+
+
+def fastfetch_install_token(d):
+    return revision([d["id"], *system_binding(d)])
+
+
+def require_fastfetch_install_target(d, token):
+    require(token == fastfetch_install_token(d), "Профиль входа изменился")
+    require(shutil.which("ssh") is not None, "ssh не найден")
+    require(has_known_host_entry(d), "Сначала проверьте ключ сервера для установки Fastfetch")
+    if d["keyPath"]:
+        require(Path(d["keyPath"]).is_file(), "Файл ключа не найден")
+
+
+def terminal_install_fastfetch(host_id, token, language):
+    store = Store()
+    with store.locked():
+        d = find_device(store.load(), host_id)
+    require_fastfetch_install_target(d, token)
+    env = ssh_environment(d)
+    env["TERM"] = "xterm-256color"
+    result = subprocess.run(strict_ssh_argv(d, ["-t"], FASTFETCH_INSTALL_COMMAND), env=env)
+    message = {
+        0: "Fastfetch доступен. Обновите сведения о системе в HostDeck.",
+        69: "Fastfetch по-прежнему не найден в PATH удалённого хоста.",
+        70: "На сервере не найден поддерживаемый менеджер пакетов.",
+        77: "Для установки нужны права root, sudo или doas.",
+    }.get(result.returncode, "Не удалось установить Fastfetch. Проверьте сообщения SSH и менеджера пакетов выше.")
+    print(translate_message(message, language), file=sys.stderr if result.returncode else sys.stdout)
+    return result.returncode
+
+
+def system_argv(d):
+    options = ["-T", "-o", "ConnectionAttempts=1"]
+    if d["auth"] != "password" and not d["saveKeyPassphrase"]:
+        options += ["-o", "BatchMode=yes"]
+    return strict_ssh_argv(d, options, SYSTEM_COMMAND)
+
+
+def bounded_system_query(d):
+    """Read bounded SSH stdout, returning None if Fastfetch is missing."""
+    try:
+        process = subprocess.Popen(system_argv(d), stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                   stderr=subprocess.DEVNULL, env=ssh_environment(d),
+                                   start_new_session=True, close_fds=True)
+    except OSError:
+        raise Error("Не удалось запустить сбор сведений о системе") from None
+    output = bytearray()
+    deadline = time.monotonic() + SYSTEM_TIMEOUT
+    def cancel(signum, frame):
+        raise Error("Сбор сведений о системе отменён")
+    # Quickshell terminates a helper when its owning panel is destroyed.
+    # Convert termination into cleanup instead of leaving an SSH session behind.
+    previous = signal.signal(signal.SIGTERM, cancel)
+    try:
+        require(process.stdout is not None, "Не удалось прочитать сведения о системе")
+        fd = process.stdout.fileno()
+        while True:
+            remaining = deadline - time.monotonic()
+            require(remaining > 0, "Сбор сведений о системе превысил 30 секунд")
+            ready, _, _ = select.select([fd], [], [], remaining)
+            require(ready, "Сбор сведений о системе превысил 30 секунд")
+            chunk = os.read(fd, min(8192, MAX_SYSTEM_BYTES + 1 - len(output)))
+            if not chunk:
+                break
+            output.extend(chunk)
+            require(len(output) <= MAX_SYSTEM_BYTES, "Ответ fastfetch превышает 256 КиБ")
+        code = process.wait(timeout=max(0.01, deadline - time.monotonic()))
+    except (OSError, subprocess.TimeoutExpired):
+        raise Error("Сбор сведений о системе превысил 30 секунд") from None
+    finally:
+        try:
+            # Also stop askpass/secret-tool descendants if SSH timed out or exited early.
+            with contextlib.suppress(ProcessLookupError):
+                os.killpg(process.pid, signal.SIGKILL)
+            with contextlib.suppress(subprocess.TimeoutExpired):
+                process.wait(timeout=1)
+            if process.stdout is not None:
+                process.stdout.close()
+        finally:
+            signal.signal(signal.SIGTERM, previous)
+    if code == 127 and output.strip() == FASTFETCH_MISSING_MARKER.encode("ascii"):
+        return None
+    require(code == 0, "Не удалось получить сведения; проверьте SSH, авторизацию и версию fastfetch")
+    return bytes(output)
+
+
+def parse_system_info(raw):
+    message = "fastfetch вернул некорректные сведения о системе"
+    require(isinstance(raw, bytes) and len(raw) <= MAX_SYSTEM_BYTES, "Ответ fastfetch превышает 256 КиБ")
+    try:
+        modules = decode(raw.decode("utf-8"))
+    except (UnicodeDecodeError, RecursionError):
+        raise Error(message) from None
+    require(isinstance(modules, list) and 1 <= len(modules) <= 32, message)
+    found = {}
+    for module in modules:
+        require(isinstance(module, dict) and isinstance(module.get("type"), str), message)
+        name = module["type"].lower()
+        if name not in SYSTEM_FIELDS:
+            continue
+        require(name not in found, message)
+        found[name] = module.get("result") if not module.get("error") else None
+
+    def string(value):
+        if not isinstance(value, str):
+            return ""
+        return "".join(c for c in value[:256] if c.isprintable()).strip()
+
+    def number(value):
+        return value if type(value) is int and 0 <= value <= 2**53 - 1 else None
+
+    def usage(value):
+        if not isinstance(value, dict):
+            return None
+        total, used, free = (number(value.get(k)) for k in ("total", "used", "free"))
+        if used is None and total is not None and free is not None:
+            used = total - free
+        if total is not None and total > 0 and used is not None and 0 <= used <= total:
+            return {"total": total, "used": used}
+        return None
+
+    fields = {}
+    for name in ("os", "kernel", "host", "cpu"):
+        value = found.get(name)
+        if not isinstance(value, dict):
+            continue
+        if name == "os":
+            label = string(value.get("prettyName")) or " ".join(filter(None, [string(value.get("name")), string(value.get("version"))]))
+        elif name == "kernel":
+            label = " ".join(filter(None, [string(value.get("name")), string(value.get("release")), string(value.get("architecture"))]))
+        elif name == "host":
+            label = " ".join(filter(None, [string(value.get("vendor")), string(value.get("name")) or string(value.get("family"))]))
+        else:
+            label = string(value.get("cpu")) or string(value.get("name"))
+        if label:
+            fields[name] = {"text": label}
+            if name == "cpu" and isinstance(value.get("cores"), dict):
+                threads = number(value["cores"].get("online"))
+                if threads is not None and 0 < threads <= 1048576:
+                    fields[name]["threads"] = threads
+    memory = usage(found.get("memory"))
+    if memory:
+        fields["memory"] = memory
+    disks = found.get("disk")
+    if isinstance(disks, list):
+        require(len(disks) <= 128, message)
+        normalized = []
+        for disk in disks:
+            if not isinstance(disk, dict):
+                continue
+            space = usage(disk.get("bytes"))
+            mountpoint = string(disk.get("mountpoint"))
+            if space and mountpoint:
+                normalized.append({"mountpoint": mountpoint, **space})
+        if normalized:
+            fields["disk"] = normalized
+    require(fields, "fastfetch не вернул поддерживаемых показателей")
+    return {"fields": fields, "unavailable": [name for name in SYSTEM_FIELDS if name not in fields]}
+
+
+def system_preferences(value):
+    message = "Некорректные настройки Fastfetch"
+    require(isinstance(value, dict) and set(value) <= {"mode", "minutes", "fields"}, message)
+    mode = value.get("mode", "view")
+    minutes = value.get("minutes", 15)
+    fields = value.get("fields")
+    require(mode in ("view", "schedule", "manual") and type(minutes) is int
+            and minutes in (5, 15, 30, 60), message)
+    if fields is not None:
+        require(isinstance(fields, list) and len(fields) <= len(SYSTEM_FIELDS)
+                and all(f in SYSTEM_FIELDS for f in fields) and len(fields) == len(set(fields)), message)
+    return {"mode": mode, "minutes": minutes, "fields": fields}
+
+
+def cached_snapshot(value, d):
+    message = "Некорректный снимок Fastfetch"
+    require(isinstance(value, dict) and set(value) == {"id", "binding", "fields", "unavailable", "fetchedAt"}, message)
+    if value["id"] != d["id"] or value["binding"] != system_binding(d):
+        return None
+    fields = value["fields"]
+    require(isinstance(fields, dict) and fields and set(fields) <= set(SYSTEM_FIELDS), message)
+    def label(v):
+        return isinstance(v, str) and 0 < len(v) <= 256 * 3 + 2 and v.isprintable()
+    def usage(v):
+        return (type(v.get("used")) is int and type(v.get("total")) is int
+                and 0 <= v["used"] <= v["total"] <= 2**53 - 1 and v["total"] > 0)
+    for name, v in fields.items():
+        if name == "disk":
+            require(isinstance(v, list) and 1 <= len(v) <= 128 and all(
+                isinstance(row, dict) and set(row) == {"mountpoint", "total", "used"}
+                and label(row["mountpoint"]) and usage(row) for row in v), message)
+        elif name == "memory":
+            require(isinstance(v, dict) and set(v) == {"used", "total"} and usage(v), message)
+        else:
+            require(isinstance(v, dict) and label(v.get("text"))
+                    and (set(v) == {"text"} or (name == "cpu" and set(v) == {"text", "threads"}
+                         and type(v["threads"]) is int and 0 < v["threads"] <= 1048576)), message)
+    require(value["unavailable"] == [k for k in SYSTEM_FIELDS if k not in fields], message)
+    try:
+        stamp = datetime.datetime.fromisoformat(value["fetchedAt"])
+        require(stamp.tzinfo is not None, message)
+    except (TypeError, ValueError):
+        raise Error(message) from None
+    return value
+
+
+def system_info(d):
+    require(shutil.which("ssh") is not None, "ssh не найден")
+    require(has_known_host_entry(d), "Сначала проверьте ключ сервера для получения сведений о системе")
+    if d["keyPath"]:
+        require(Path(d["keyPath"]).is_file(), "Файл ключа не найден")
+    result = {"id": d["id"], "binding": system_binding(d)}
+    raw = bounded_system_query(d)
+    if raw is None:
+        return {"systemInfo": {**result, "fastfetchInstallToken": fastfetch_install_token(d)}}
+    info = parse_system_info(raw)
+    return {"systemInfo": {**result, "fetchedAt": datetime.datetime.now(datetime.timezone.utc).isoformat(), **info}}
 
 
 def probe(d):
@@ -1801,7 +2163,23 @@ def dispatch(req, store=None) -> dict[str, Any]:
         if op == "list":
             cleanup_sftp_runtime()
             scripts = store.load_scripts()
-            return {"data": data, "scripts": {d["id"]: scripts_for_host(scripts, d) for d in data["devices"]},
+            snapshots = {}
+            preferences = {}
+            for d in data["devices"]:
+                # Isolate an unreadable cache entry so the catalog remains usable.
+                try:
+                    snapshot = store.system_record(d, "snapshot")
+                except (Error, OSError, UnicodeError):
+                    snapshot = None
+                if snapshot:
+                    snapshots[d["id"]] = snapshot
+                try:
+                    pref = store.system_record(d, "preferences")
+                except (Error, OSError, UnicodeError):
+                    pref = system_preferences({"mode": "manual"})
+                if pref:
+                    preferences[d["id"]] = pref
+            return {"systemCache": snapshots, "systemPreferences": preferences, "data": data, "scripts": {d["id"]: scripts_for_host(scripts, d) for d in data["devices"]},
                     "sftpStates": sftp_states(data["devices"]),
                     **settings_response(store.load_settings())}
         if op == "saveDevice":
@@ -1853,6 +2231,8 @@ def dispatch(req, store=None) -> dict[str, Any]:
             require(type(req.get("notes", False)) is bool and type(req.get("paths", False)) is bool, "Некорректные параметры экспорта")
             path = Path(safe_path(req.get("path"), "Файл экспорта"))
             require(path.is_absolute() and path.parent.is_dir(), "Каталог экспорта не найден")
+            require(path.resolve().parent != store.root.resolve() or not path.name.startswith("system-"),
+                    "Нельзя экспортировать поверх данных плагина")
             require(path.resolve() not in (store.path.resolve(), store.settings_path.resolve()),
                     "Нельзя экспортировать поверх данных плагина")
             atomic_write(path, export_document(data, req.get("notes", False), req.get("paths", False)), overwrite=False)
@@ -1942,7 +2322,8 @@ def dispatch(req, store=None) -> dict[str, Any]:
             # complete explicit fingerprint verification before first use.
             if not has_known_host_entry(d):
                 return host_key_preview(d)
-            result: dict[str, Any] = {"message": launch(d, client, agent)}
+            result: dict[str, Any] = {"message": launch(d, client, agent, store.load_settings())
+                                      if client == "sftp" else launch(d, client, agent)}
             if client == "sftp":
                 result["sftpStates"] = {d["id"]: sftp_state(d)}
             return result
@@ -1964,7 +2345,31 @@ def dispatch(req, store=None) -> dict[str, Any]:
             p = subprocess.run(["wl-copy"], input=endpoint, text=True, capture_output=True, timeout=3)
             require(p.returncode == 0, "Буфер обмена недоступен")
             return {"message": "SSH-адрес скопирован (не пароль)"}
-        if op == "checkDevice":
+        if op == "installFastfetch":
+            require(set(req) == {"op", "id", "token"}, "Некорректный запрос установки Fastfetch")
+            d = find_device(data, req.get("id"))
+            require_fastfetch_install_target(d, req["token"])
+            client = store.load_settings()["defaultTerminal"]
+            args = [*TERMINALS[client][1], sys.executable, str(HERE / "helper.py"),
+                    "--install-fastfetch", d["id"], req["token"]]
+            require(shutil.which(args[0]) is not None, "Терминал не найден в PATH")
+            subprocess.Popen(args, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                             stderr=subprocess.DEVNULL, start_new_session=True, close_fds=True)
+            return {}
+        if op == "setSystemPreference":
+            require(set(req) == {"op", "id", "binding", "change"}, "Некорректные настройки Fastfetch")
+            target = find_device(data, req["id"])
+            require(req["binding"] == system_binding(target), "Профиль входа изменился")
+            change = req["change"]
+            require(isinstance(change, dict) and len(change) == 1, "Некорректные настройки Fastfetch")
+            pref = system_preferences({**(store.system_record(target, "preferences") or {}), **change})
+            atomic_write(store.system_path(target, "preferences"), pref)
+            return {"systemPreference": {"id": target["id"], "value": pref}}
+        if op == "systemInfo":
+            require(set(req) in ({"op", "id"}, {"op", "id", "binding"}), "Сведения о системе принимают только id хоста")
+            target = find_device(data, req.get("id"))
+            require(req.get("binding", system_binding(target)) == system_binding(target), "Профиль входа изменился")
+        elif op == "checkDevice":
             require(set(req) == {"op", "id"}, "Проверка устройства принимает только его id")
             devices = [find_device(data, req.get("id"))]
         elif op == "check":
@@ -1972,6 +2377,15 @@ def dispatch(req, store=None) -> dict[str, Any]:
         else:
             raise Error("Неизвестная операция")
     # Do not hold the persistence lock while doing network I/O.
+    if op == "systemInfo":
+        result = system_info(target)
+        with store.locked():
+            current = find_device(store.load(), target["id"])
+            require(system_binding(current) == system_binding(target), "Профиль входа изменился")
+            snapshot = result["systemInfo"]
+            if "fields" in snapshot:
+                atomic_write(store.system_path(current, "snapshot"), snapshot)
+        return result
     return {"statuses": checks(devices)}
 
 
@@ -1991,6 +2405,7 @@ def script_preview(req):
 
 def main():
     language = "en"
+    installing_fastfetch = sys.argv[1:2] == ["--install-fastfetch"]
     try:
         if len(sys.argv) == 2 and sys.argv[1] == "--script-preview":
             raw = sys.stdin.buffer.readline(MAX_BYTES + 1)
@@ -2002,10 +2417,13 @@ def main():
             return
         if len(sys.argv) == 4 and sys.argv[1] == "--terminal-script":
             sys.exit(terminal_script(sys.argv[2], sys.argv[3]))
-        if len(sys.argv) in (3, 5) and sys.argv[1] == "--terminal":
+        if installing_fastfetch or (len(sys.argv) in (3, 5) and sys.argv[1] == "--terminal"):
             store = Store()
             with store.locked():
                 language = store.load_settings()["language"]
+            if installing_fastfetch:
+                require(len(sys.argv) == 4, "Неизвестные аргументы терминала")
+                sys.exit(terminal_install_fastfetch(sys.argv[2], sys.argv[3], language))
             require(len(sys.argv) == 3 or sys.argv[3] == "--agent", "Неизвестные аргументы терминала")
             terminal(sys.argv[2], sys.argv[4] if len(sys.argv) == 5 else None)
             return
@@ -2022,7 +2440,7 @@ def main():
         message = translate_message(str(e), language)
         if sys.argv[1:2] == ["--script-preview"]:
             sys.exit(1)
-        if sys.argv[1:2] in (["--terminal"], ["--terminal-script"]):
+        if installing_fastfetch or sys.argv[1:2] in (["--terminal"], ["--terminal-script"]):
             print(message, file=sys.stderr)
             sys.exit(1)
         print(json.dumps({"ok": False, "error": message}, ensure_ascii=False))
@@ -2031,6 +2449,9 @@ def main():
             sys.exit(1)
         # Never serialize exception text or tracebacks: requests may contain passwords.
         error = translate_message("Операция не выполнена: проверьте данные, права и зависимости", language)
+        if installing_fastfetch:
+            print(error, file=sys.stderr)
+            sys.exit(1)
         print(json.dumps({"ok": False, "error": error}, ensure_ascii=False))
 
 

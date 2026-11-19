@@ -6,6 +6,7 @@ import QtQuick.Controls as Controls
 import QtQuick.Layouts
 import Quickshell.Io
 import qs.Commons
+import qs.Commons as Commons
 import qs.Ui as Ui
 import "state" as State
 
@@ -23,6 +24,20 @@ Ui.Panel {
     property var profiles: ({version: 1, groups: [], devices: []})
     property var statuses: ({})
     property var sftpStates: ({})
+    readonly property var systemPolicy: State.SystemState.pref(systemHost)
+    readonly property bool systemLoading: State.SystemState.collecting(systemHostId)
+    property string systemHostId: ""
+    property var fileManagers: []
+    property string fileManagerDraft: "nautilus"
+    property string fileModeDraft: "mount"
+    property string fileExecutableDraft: ""
+    property string fileArgumentsDraft: "{target}"
+    property var systemFieldsDraft: ["os", "kernel", "host", "cpu", "memory", "disk"]
+    readonly property var systemFieldNames: ["os", "kernel", "host", "cpu", "memory", "disk"]
+    readonly property var systemHost: deviceById(systemHostId)
+    readonly property var systemResult: matchingSystemInfo(systemHost)
+    readonly property string fileManagerName: globalConfig.fileManager === "custom" ? globalConfig.fileExecutable
+        : (globalConfig.fileManager === "strata" ? "Strata" : "Nautilus")
     property var scripts: ({})
     property string scriptHostId: ""
     property string scriptId: ""
@@ -49,7 +64,10 @@ Ui.Panel {
         || (layoutSetting === "auto" && panel.availableCardWidth - panel.padding * 2 >= Style.space(760))
     readonly property bool settingsDirty: settingsLoaded && (terminalDraft !== globalConfig.defaultTerminal
         || languageDraft !== globalConfig.language || layoutDraft !== globalConfig.layout
-        || watchDraft !== String(watchMinutes))
+        || watchDraft !== String(watchMinutes) || fileManagerDraft !== globalConfig.fileManager
+        || fileModeDraft !== globalConfig.fileMode || fileExecutableDraft !== globalConfig.fileExecutable
+        || fileArgumentsDraft !== (globalConfig.fileArguments || ["{target}"]).join("\n")
+        || JSON.stringify(systemFieldsDraft) !== JSON.stringify(globalConfig.systemFields || systemFieldNames))
     readonly property bool terminalAvailable: terminals.some(function(t) { return t.value === terminalDraft && t.available })
     readonly property string terminalName: {
         for (var i = 0; i < terminals.length; i++)
@@ -157,12 +175,12 @@ Ui.Panel {
     readonly property bool busy: request.running
     // Panel chrome comes from the theme's [popups] surface. Supporting text
     // uses the kit's own dim convention (`Qt.darker(foreground, 1.4)`).
-    readonly property color popupSurface: Color.popups.background
-    readonly property color secondaryText: Qt.darker(Color.foreground, 1.4)
-    readonly property color faintText: Qt.darker(Color.foreground, 2.0)
-    readonly property color tint: Style.normalFillFor(Color.foreground, Color.accent)
-    readonly property color urgentTint: Qt.rgba(Color.urgent.r, Color.urgent.g, Color.urgent.b, 0.12)
-    readonly property color rule: Qt.rgba(Color.foreground.r, Color.foreground.g, Color.foreground.b, 0.12)
+    readonly property color popupSurface: Commons.Color.popups.background
+    readonly property color secondaryText: Qt.darker(Commons.Color.foreground, 1.4)
+    readonly property color faintText: Qt.darker(Commons.Color.foreground, 2.0)
+    readonly property color tint: Style.normalFillFor(Commons.Color.foreground, Commons.Color.accent)
+    readonly property color urgentTint: Qt.rgba(Commons.Color.urgent.r, Commons.Color.urgent.g, Commons.Color.urgent.b, 0.12)
+    readonly property color rule: Qt.rgba(Commons.Color.foreground.r, Commons.Color.foreground.g, Commons.Color.foreground.b, 0.12)
 
     readonly property var rows: computeRows()
     readonly property string currentKey: {
@@ -179,6 +197,7 @@ Ui.Panel {
     }
 
     onPageChanged: {
+        viewSystemTimer.restart()
         detailZone = false
         dockMode = ""
         hostDeleteId = ""
@@ -188,9 +207,11 @@ Ui.Panel {
         })
     }
     onCurrentIdChanged: {
+        viewSystemTimer.restart()
         dockMode = ""
         hostDeleteId = ""
         detailCursor = 0
+        if (page === "system") systemHostId = currentId
         if (current && statusAgeSeconds(current) > 60) refreshDevice(current)
     }
     onAddressesHiddenChanged: {
@@ -387,6 +408,7 @@ Ui.Panel {
     function call(payload) {
         if (busy) return false
         payload.language = language
+        request.preferenceRevision = State.SystemState.preferenceRevision
         request.operation = payload.op
         request.payload = JSON.stringify(payload)
         request.running = true
@@ -487,13 +509,80 @@ Ui.Panel {
     function saveSettings() {
         if (!settingsDirty || !terminalAvailable) return
         call({op: "saveSettings", settings: {version: 1, defaultTerminal: terminalDraft, language: languageDraft, layout: layoutDraft,
-                                             watchMinutes: Number(watchDraft)}})
+                                             watchMinutes: Number(watchDraft), fileManager: fileManagerDraft,
+                                             fileMode: fileModeDraft, fileExecutable: fileExecutableDraft,
+                                             fileArguments: fileArgumentsDraft.split("\n"), systemFields: systemFieldsDraft}})
     }
     function revertSettings() {
         terminalDraft = globalConfig.defaultTerminal
         languageDraft = globalConfig.language
         layoutDraft = globalConfig.layout
         watchDraft = String(watchMinutes)
+        fileManagerDraft = globalConfig.fileManager || "nautilus"
+        fileModeDraft = globalConfig.fileMode || "mount"
+        fileExecutableDraft = globalConfig.fileExecutable || ""
+        fileArgumentsDraft = (globalConfig.fileArguments || ["{target}"]).join("\n")
+        systemFieldsDraft = (globalConfig.systemFields || systemFieldNames).slice()
+    }
+    function matchingSystemInfo(d) { return State.SystemState.info(d) }
+    function cardFields(d) {
+        return State.SystemState.pref(d).fields || globalConfig.systemFields || systemFieldNames
+    }
+    function saveSystemChange(change) {
+        if (systemHost) call({op: "setSystemPreference", id: systemHostId,
+                              binding: State.SystemState.binding(systemHost), change: change})
+    }
+    function openSystem(d) {
+        if (!d) return
+        systemHostId = d.id
+        page = "system"
+    }
+    function fetchSystemInfo() {
+        if (systemHost) State.SystemState.manual(systemHost)
+    }
+    function systemFieldLabel(name) {
+        var labels = {os: t("Operating system"), kernel: t("Kernel"), host: t("Hardware"),
+                      cpu: t("CPU"), memory: t("Memory"), disk: t("Disks")}
+        return labels[name] || name
+    }
+    function toggleSystemField(name) {
+        var selected = systemFieldsDraft.slice()
+        var at = selected.indexOf(name)
+        if (at < 0) selected.push(name)
+        else selected.splice(at, 1)
+        systemFieldsDraft = systemFieldNames.filter(function(f) { return selected.indexOf(f) >= 0 })
+    }
+    function bytesText(bytes) {
+        var units = ["B", "KiB", "MiB", "GiB", "TiB", "PiB"]
+        var unit = 0
+        while (bytes >= 1024 && unit < units.length - 1) { bytes /= 1024; unit++ }
+        return Number(bytes).toLocaleString(Qt.locale(language), "f", unit > 0 ? 1 : 0) + " " + units[unit]
+    }
+    function usageText(value) {
+        return t("%1 / %2 used (%3%)").arg(bytesText(value.used)).arg(bytesText(value.total))
+            .arg(Math.round(value.used * 100 / value.total))
+    }
+    function systemRows(info, names) {
+        if (!info || !info.fields) return []
+        var rows = []
+        names.forEach(function(name) {
+            var value = info.fields[name]
+            var label = root.systemFieldLabel(name)
+            if (!value) rows.push({label: label, value: root.t("Not available"), sensitive: false})
+            else if (name === "disk") value.forEach(function(disk) {
+                rows.push({label: label + " · " + disk.mountpoint, value: root.usageText(disk), sensitive: true})
+            })
+            else rows.push({label: label, sensitive: name === "host", value: name === "memory" ? root.usageText(value)
+                : value.text + (value.threads ? root.t(value.threads === 1 ? " · %1 thread" : " · %1 threads").arg(value.threads) : "")})
+        })
+        return rows
+    }
+    function filesDescription(d) {
+        if (matchingSftpState(d) === "foreign") return t("Mount point is busy")
+        if (matchingSftpState(d) === "mounted" && globalConfig.fileMode === "uri") return t("Disconnect SSHFS before opening an SFTP URL")
+        if (matchingSftpState(d) === "mounted") return t("Mounted · open in %1").arg(fileManagerName)
+        return globalConfig.fileMode === "uri" ? t("SFTP URL in %1").arg(fileManagerName)
+                                               : t("SSHFS · open in %1").arg(fileManagerName)
     }
     function openTransfer(tab) {
         if (busy) return
@@ -542,7 +631,7 @@ Ui.Panel {
         if (client === "vscode" && (!vscodeEnabled || d.auth !== "agent")) return
         clearPendingLaunch()
         pendingLaunchClient = client || ""
-        var title = client === "sftp" ? t("Mounting SFTP…") : client === "vscode" ? t("Opening VS Code…")
+        var title = client === "sftp" ? (globalConfig.fileMode === "uri" ? t("Opening Files…") : t("Mounting SFTP…")) : client === "vscode" ? t("Opening VS Code…")
                                        : t("Opening SSH in %1…").arg(terminalName)
         beginLaunch(id, client || "ssh", title, d.name + " · " + endpointPort(d))
         var payload = {op: "launch", id: id}
@@ -673,6 +762,7 @@ Ui.Panel {
                 items.push({id: "vscode", icon: "󰨞", label: "VS Code", key: "V", enabled: d.auth === "agent", separator: true})
         }
         items.push({id: "edit", icon: "󰏫", label: t("Edit host"), key: "E"})
+        items.push({id: "system", icon: "󰋼", label: t("System details"), key: "I"})
         items.push({id: "verify", icon: "󰒃", label: t("Verify host key"), key: "K"})
         items.push({id: "copy", icon: "󰆏", label: t("Copy SSH endpoint"), key: "C"})
         items.push({id: "pin", icon: d.pinned ? "󰤰" : "󰐃", label: d.pinned ? t("Unpin") : t("Pin to top"), key: "P", separator: !menuFull})
@@ -694,6 +784,7 @@ Ui.Panel {
         else if (id === "files") launchDevice(d.id, "sftp")
         else if (id === "vscode") launchDevice(d.id, "vscode")
         else if (id === "edit") editDevice(d)
+        else if (id === "system") openSystem(d)
         else if (id === "verify") inspectHostKey(d.id)
         else if (id === "copy") copyEndpoint(d)
         else if (id === "pin") togglePin(d)
@@ -1069,22 +1160,22 @@ Ui.Panel {
     // Reachability owns the dot; latency colour encodes speed with theme
     // roles only: neutral up to 50 ms, accent below 100 ms, urgent above.
     function latencyColor(ms) {
-        return ms <= 50 ? secondaryText : (ms < 100 ? Color.accent : Color.urgent)
+        return ms <= 50 ? secondaryText : (ms < 100 ? Commons.Color.accent : Commons.Color.urgent)
     }
     function statusDotColor(kind) {
-        if (kind === "online") return Qt.rgba(Color.foreground.r, Color.foreground.g, Color.foreground.b, 0.75)
-        if (kind === "degraded") return Color.accent
-        if (kind === "unknown" || kind === "pending") return Color.muted
-        return Color.urgent
+        if (kind === "online") return Qt.rgba(Commons.Color.foreground.r, Commons.Color.foreground.g, Commons.Color.foreground.b, 0.75)
+        if (kind === "degraded") return Commons.Color.accent
+        if (kind === "unknown" || kind === "pending") return Commons.Color.muted
+        return Commons.Color.urgent
     }
     function rowStatus(d) {
         var kind = statusKind(d)
         var s = matchingStatus(d)
         if (kind === "pending") return {text: "", color: secondaryText, spinner: true}
-        if (kind === "offline" || kind === "error") return {text: t("offline"), color: Color.urgent}
+        if (kind === "offline" || kind === "error") return {text: t("offline"), color: Commons.Color.urgent}
         if (s && s.ms !== null && s.ms !== undefined) return {text: Math.round(s.ms) + " ms", color: latencyColor(s.ms)}
-        if (kind === "degraded") return {text: t("SSH closed"), color: Color.accent}
-        if (kind === "online") return {text: t("no response"), color: Color.urgent}
+        if (kind === "degraded") return {text: t("SSH closed"), color: Commons.Color.accent}
+        if (kind === "online") return {text: t("no response"), color: Commons.Color.urgent}
         return {text: query.trim() !== "" ? t("not checked") : "—", color: faintText}
     }
     function ageText(seconds) {
@@ -1161,8 +1252,8 @@ Ui.Panel {
                     footer: [facts.join(" · ")]}
         }
         var lines = []
-        pinnedDown.slice(0, 3).forEach(function(x) { lines.push({color: Color.urgent, text: root.t("%1 — unreachable").arg(x.name)}) })
-        if (pinnedDown.length > 3) lines.push({color: Color.urgent, text: t("+%1 more unreachable").arg(pinnedDown.length - 3), dim: true})
+        pinnedDown.slice(0, 3).forEach(function(x) { lines.push({color: Commons.Color.urgent, text: root.t("%1 — unreachable").arg(x.name)}) })
+        if (pinnedDown.length > 3) lines.push({color: Commons.Color.urgent, text: t("+%1 more unreachable").arg(pinnedDown.length - 3), dim: true})
         mountedDevices.slice(0, 3).forEach(function(x) { lines.push({color: root.secondaryText, text: root.t("SFTP: %1 mounted").arg(x.name)}) })
         if (mountedDevices.length > 3) lines.push({color: secondaryText, text: t("+%1 more mounted").arg(mountedDevices.length - 3), dim: true})
         var newest = -Infinity
@@ -1284,6 +1375,7 @@ Ui.Panel {
             }
         }
         if (page === "hostkey" && key === Qt.Key_R && !ctrl) { inspectHostKey(hostKeyDeviceId, true); return true }
+        if (page === "system" && key === Qt.Key_R && !ctrl) { fetchSystemInfo(); return true }
         if (page !== "list") {
             if (key === Qt.Key_Escape) { navigateBack(); return true }
             return false
@@ -1393,6 +1485,7 @@ Ui.Panel {
     // Match Yandex Music's lifecycle: closing never clears the active mode.
     // DraftState also restores the form if another widget instance opens.
     onOpenedChanged: if (opened) {
+        viewSystemTimer.restart()
         clockMs = Date.now()
         menuHostId = ""
         quickMenuOpen = false
@@ -1444,6 +1537,7 @@ Ui.Panel {
     Process {
         id: request
         property string payload: ""
+        property int preferenceRevision: 0
         property string operation: ""
         command: ["python3", root.helperPath]
         stdinEnabled: true
@@ -1478,13 +1572,24 @@ Ui.Panel {
         }
     }
     function applyResult(operation, result) {
-        if (result.data) { profiles = result.data; loaded = true }
+        if (result.data) {
+            profiles = result.data
+            loaded = true
+            State.SystemState.sync(profiles.devices, result.systemCache, result.systemPreferences, request.preferenceRevision)
+            if (opened) viewSystemTimer.restart()
+        }
+        if (result.systemPreference) {
+            State.SystemState.configure(result.systemPreference.id, result.systemPreference.value)
+            viewSystemTimer.restart()
+        }
         if (result.globalSettings) {
             globalConfig = result.globalSettings
+            State.SystemState.language = language
             revertSettings()
             settingsLoaded = true
         }
         if (result.terminals) terminals = result.terminals
+        if (result.fileManagers) fileManagers = result.fileManagers
         if (result.sftpStates) {
             sftpStates = operation === "list" ? result.sftpStates : Object.assign({}, sftpStates, result.sftpStates)
         }
@@ -1557,6 +1662,8 @@ Ui.Panel {
         } else if (operation === "unmountSftp") {
             toast("info", result.message || t("SFTP disconnected"))
             if (unmountQueue.length > 0) Qt.callLater(pumpUnmount)
+        } else if (operation === "installFastfetch") {
+            toast("info", t("Fastfetch installer opened"), t("Follow the prompts in the terminal."))
         }
         if (unmountQueue.length === 0) barAction = false
         if (page === "transfer" && transferTab === "export" && exportRequested !== exportNotes + "/" + exportPaths)
@@ -1566,6 +1673,15 @@ Ui.Panel {
             Qt.callLater(refresh)
         }
         restoreDraftFocus()
+    }
+    Timer {
+        id: viewSystemTimer
+        interval: 350
+        onTriggered: {
+            if (!root.opened || !root.loaded || (root.page !== "list" && root.page !== "system")) return
+            const d = root.page === "system" ? root.systemHost : root.current
+            if (!State.SystemState.collect(d, "view")) restart()
+        }
     }
     Timer {
         id: requestGuard
@@ -1663,12 +1779,17 @@ Ui.Panel {
         id: button
         anchors.fill: parent
         bar: root.bar
-        iconComponent: Component {
-            HostDeckIcon {
-                color: button.active && button.useActiveColor ? button.activeColor : button.foreground
-                alertColor: Color.urgent
-                mode: root.barMode
-            }
+        // Keep the shaped icon on its own canvas. Omarchy 4.5 measures and
+        // scales iconComponent's children, shifting these nested SVG paths.
+        hasVisualContent: true
+        HostDeckIcon {
+            anchors.centerIn: parent
+            width: Style.bar.iconCanvas
+            height: width
+            scale: button.pressScale
+            color: button.active && button.useActiveColor ? button.activeColor : button.foreground
+            alertColor: Commons.Color.urgent
+            mode: root.barMode
         }
         // The bar tooltip is plain centered text; the hover card below
         // replaces it to keep the dots and hierarchy readable.
@@ -1695,7 +1816,7 @@ Ui.Panel {
     PopupWindow {
         id: hoverCard
         readonly property var model: root.hoverModel()
-        readonly property color text: Color.tooltip.text
+        readonly property color text: Commons.Color.tooltip.text
         visible: root.hoverShown && !root.opened && !root.quickMenuOpen && button.QsWindow.window !== null
         color: "transparent"
         implicitWidth: Style.space(260)
@@ -1723,8 +1844,8 @@ Ui.Panel {
         }
         Ui.BorderSurface {
             anchors.fill: parent
-            color: Color.tooltip.background
-            borderSpec: Border.surfaceSpec("tooltip", "border", Color.tooltip.border, 1)
+            color: Commons.Color.tooltip.background
+            borderSpec: Border.surfaceSpec("tooltip", "border", Commons.Color.tooltip.border, 1)
             radius: Style.cornerRadius
             ColumnLayout {
                 id: hoverColumn
@@ -1839,7 +1960,7 @@ Ui.Panel {
                             Layout.fillWidth: true
                             implicitHeight: Style.space(30)
                             hasCursor: quickEntry.usable && root.quickIndex === quickEntry.index
-                            fill: Style.hoverFillFor(Color.foreground, Color.accent)
+                            fill: Style.hoverFillFor(Commons.Color.foreground, Commons.Color.accent)
                             opacity: quickEntry.usable ? 1 : 0.45
                             MouseArea {
                                 anchors.fill: parent
@@ -1869,7 +1990,7 @@ Ui.Panel {
                                 }
                                 Label {
                                     text: quickEntry.modelData.label
-                                    color: quickEntry.modelData.dim ? root.secondaryText : Color.foreground
+                                    color: quickEntry.modelData.dim ? root.secondaryText : Commons.Color.foreground
                                     wrapMode: Text.NoWrap
                                     elide: Text.ElideRight
                                 }
@@ -2009,7 +2130,7 @@ Ui.Panel {
                                 Layout.fillWidth: false
                                 text: root.matchCount() === 1 ? root.t("1 match") : root.t("%1 matches").arg(root.matchCount())
                                 font.bold: true
-                                color: root.matchCount() === 0 ? Color.urgent : Color.foreground
+                                color: root.matchCount() === 0 ? Commons.Color.urgent : Commons.Color.foreground
                                 wrapMode: Text.NoWrap
                             }
                             Caption { text: root.t("in name · address · group · note · link"); wrapMode: Text.NoWrap; elide: Text.ElideRight }
@@ -2164,6 +2285,100 @@ Ui.Panel {
 
                     Detail { anchors.fill: parent; visible: root.page === "list" && root.wide }
 
+                    ColumnLayout {
+                        anchors.fill: parent
+                        visible: root.page === "system"
+                        spacing: Style.space(12)
+                        PageHeader {
+                            title: root.t("System")
+                            subtitle: root.systemHost ? root.systemHost.name : root.t("Select a host on the left")
+                            Action { text: root.t("Back"); onClicked: root.showList() }
+                        }
+                        Scroll {
+                            Layout.fillWidth: true
+                            Layout.fillHeight: true
+                            ColumnLayout {
+                                Layout.fillWidth: true
+                                spacing: Style.space(12)
+                                Caption { text: root.t("System details are collected over SSH using Fastfetch.") }
+                                RowLayout {
+                                    Layout.fillWidth: true
+                                    Primary {
+                                        iconText: "󰑐"
+                                        text: root.systemLoading ? root.t("Loading…")
+                                            : root.systemResult && root.systemResult.fields ? root.t("Refresh") : root.t("Get system details")
+                                        enabled: root.systemHost !== null && !root.systemLoading && !root.busy
+                                        onClicked: root.fetchSystemInfo()
+                                    }
+                                    Action { text: root.t("Verify host key"); enabled: root.systemHost !== null && !root.busy; onClicked: root.inspectHostKey(root.systemHostId) }
+                                }
+                                Caption { text: root.t("Refresh mode") }
+                                Segmented {
+                                    enabled: !!root.systemHost && !root.busy
+                                    value: root.systemPolicy.mode
+                                    options: [{value: "view", label: root.t("On view")}, {value: "schedule", label: root.t("Scheduled")},
+                                              {value: "manual", label: root.t("Manual")}]
+                                    onChanged: function(v) { root.saveSystemChange({mode: v}) }
+                                }
+                                Stepper {
+                                    visible: root.systemPolicy.mode === "schedule"
+                                    enabled: !root.busy
+                                    options: [5, 15, 30, 60].map(n => ({value: String(n), label: root.t("%1 min").arg(n)}))
+                                    value: String(root.systemPolicy.minutes)
+                                    onChanged: function(v) { root.saveSystemChange({minutes: Number(v)}) }
+                                }
+                                Notice {
+                                    id: systemNotice
+                                    readonly property string installToken: root.systemResult ? root.systemResult.fastfetchInstallToken || "" : ""
+                                    visible: text !== ""
+                                    kind: "error"
+                                    text: installToken !== "" ? root.t("Fastfetch was not found on the remote host.")
+                                        : root.systemResult ? root.systemResult.error || "" : ""
+                                    IconAction {
+                                        visible: systemNotice.installToken !== ""
+                                        enabled: !root.busy && !root.systemLoading
+                                        iconText: "󰇚"
+                                        tooltipText: root.t("Install Fastfetch on the remote host")
+                                        onClicked: root.call({op: "installFastfetch", id: root.systemHostId,
+                                                              token: systemNotice.installToken})
+                                    }
+                                }
+                                Caption {
+                                    visible: root.systemResult !== null && !!root.systemResult.fetchedAt
+                                    text: root.systemResult && root.systemResult.fetchedAt
+                                        ? root.t("Fetched at %1").arg(Qt.formatDateTime(new Date(root.systemResult.fetchedAt), "yyyy-MM-dd hh:mm:ss")) : ""
+                                }
+                                Rule { title: root.t("Show in host card") }
+                                Repeater {
+                                    model: root.systemFieldNames
+                                    CheckRow {
+                                        id: systemField
+                                        required property string modelData
+                                        enabled: !!root.systemHost && !root.busy
+                                        checked: root.cardFields(root.systemHost).indexOf(modelData) >= 0
+                                        text: root.systemFieldLabel(modelData)
+                                        detail: root.systemRows(root.systemResult, [modelData]).map(row =>
+                                            modelData === "disk" ? row.label + ": " + row.value : row.value).join("\n")
+                                        privateDetail: root.addressesHidden && (modelData === "host" || modelData === "disk")
+                                        onToggled: {
+                                            const fields = root.cardFields(root.systemHost)
+                                            root.saveSystemChange({fields: root.systemFieldNames.filter(f =>
+                                                f === modelData ? !checked : fields.indexOf(f) >= 0)})
+                                        }
+                                    }
+                                }
+                                Action {
+                                    visible: root.systemPolicy.fields !== null
+                                    enabled: !root.busy
+                                    text: root.t("Use global field settings")
+                                    onClicked: root.saveSystemChange({fields: null})
+                                }
+                                InfoLine { text: root.t("The last successful snapshot is stored locally.") }
+
+                            }
+                        }
+                    }
+
                     // ---- host form
                     ColumnLayout {
                         anchors.fill: parent
@@ -2239,8 +2454,8 @@ Ui.Panel {
                                                 enabled: !root.addressesHidden
                                                 layer.enabled: root.addressesHidden && visible
                                                 layer.effect: PrivacyBlur {}
-                                                accent: root.draftPortValid ? Color.accent : Color.urgent
-                                                foreground: root.draftPortValid ? Color.foreground : Color.urgent
+                                                accent: root.draftPortValid ? Commons.Color.accent : Commons.Color.urgent
+                                                foreground: root.draftPortValid ? Commons.Color.foreground : Commons.Color.urgent
                                                 placeholderText: "22"
                                                 maximumLength: 5
                                                 onTextChanged: {
@@ -2326,7 +2541,7 @@ Ui.Panel {
                                             checked: State.DraftState.saveKeyPassphrase
                                             enabled: keyField.text !== ""
                                             text: root.t("Save key passphrase")
-                                            detail: root.t(root.vscodeEnabled ? "Auto-fill applies to terminal, AI CLI, and SFTP, not VS Code." : "Auto-fill applies to terminal, AI CLI, and SFTP.")
+                                            detail: root.t(root.vscodeEnabled ? "Auto-fill applies to terminal, AI CLI, and SSHFS, not direct SFTP URLs or VS Code." : "Auto-fill applies to terminal, AI CLI, and SSHFS, not direct SFTP URLs.")
                                             onToggled: {
                                                 State.DraftState.saveKeyPassphrase = !State.DraftState.saveKeyPassphrase
                                                 if (!State.DraftState.saveKeyPassphrase) {
@@ -2410,7 +2625,7 @@ Ui.Panel {
                                             IconAction { iconText: "󰏫"; tooltipText: root.t("Edit script"); onClicked: root.editScript(root.editId, formScriptRow.modelData) }
                                             IconAction {
                                                 iconText: "󰆴"
-                                                hoverColor: Color.urgent
+                                                hoverColor: Commons.Color.urgent
                                                 tooltipText: root.t("Delete script")
                                                 onClicked: { root.scriptHostId = root.editId; root.scriptReturnPage = "device"; root.requestConfirm("deleteScript", formScriptRow.modelData.id) }
                                             }
@@ -2463,7 +2678,7 @@ Ui.Panel {
                                             }
                                             IconAction {
                                                 iconText: "󰆴"
-                                                hoverColor: Color.urgent
+                                                hoverColor: Commons.Color.urgent
                                                 tooltipText: root.t("Remove link")
                                                 onClicked: root.removeDraftLink(formLinkRow.index)
                                             }
@@ -2488,15 +2703,15 @@ Ui.Panel {
                                             id: noteField
                                             Layout.fillWidth: true
                                             implicitHeight: Math.max(Style.space(64), contentHeight + topPadding + bottomPadding)
-                                            color: Color.foreground
-                                            selectionColor: Style.selectionFillFor(Color.foreground, Color.accent)
+                                            color: Commons.Color.foreground
+                                            selectionColor: Style.selectionFillFor(Commons.Color.foreground, Commons.Color.accent)
                                             font.family: Style.font.family
                                             font.pixelSize: Style.font.body
                                             wrapMode: TextEdit.Wrap
                                             textFormat: TextEdit.PlainText
                                             background: Ui.BorderSurface {
-                                                color: Style.controlFill(noteField.activeFocus, noteField.hovered, Color.foreground, Color.accent)
-                                                borderSpec: Border.controlSpec(noteField.activeFocus ? "focus" : "normal", Color.foreground, Color.accent)
+                                                color: Style.controlFill(noteField.activeFocus, noteField.hovered, Commons.Color.foreground, Commons.Color.accent)
+                                                borderSpec: Border.controlSpec(noteField.activeFocus ? "focus" : "normal", Commons.Color.foreground, Commons.Color.accent)
                                                 radius: Style.cornerRadius
                                             }
                                             onTextChanged: if (State.DraftState.active) State.DraftState.note = text
@@ -2571,7 +2786,7 @@ Ui.Panel {
                                                         required property int index
                                                         textFormat: Text.PlainText
                                                         text: modelData
-                                                        color: index % 2 ? root.secondaryText : Color.foreground
+                                                        color: index % 2 ? root.secondaryText : Commons.Color.foreground
                                                         font.family: Style.font.family
                                                         font.pixelSize: Style.font.subtitle
                                                     }
@@ -2695,6 +2910,74 @@ Ui.Panel {
                                 ColumnLayout {
                                     Layout.fillWidth: true
                                     spacing: Style.space(6)
+                                    Rule { title: root.t("File manager"); trailing: "SFTP" }
+                                    Choice {
+                                        value: root.fileManagerDraft
+                                        options: root.fileManagers.map(function(m) {
+                                            return {value: m.value, label: m.label + (m.available ? "" : " · " + root.t("not installed"))}
+                                        }).concat([{value: "custom", label: root.t("Custom app")}])
+                                        onChanged: function(v) { root.fileManagerDraft = v }
+                                    }
+                                    FieldBlock {
+                                        visible: root.fileManagerDraft === "custom"
+                                        label: root.t("Application name in PATH")
+                                        Field {
+                                            text: root.fileExecutableDraft
+                                            maximumLength: 64
+                                            placeholderText: "strata"
+                                            onTextChanged: root.fileExecutableDraft = text
+                                        }
+                                    }
+                                    FieldBlock {
+                                        visible: root.fileManagerDraft === "custom"
+                                        label: root.t("Arguments · one per line, {target} on its own line")
+                                        Controls.TextArea {
+                                            Layout.fillWidth: true
+                                            implicitHeight: Style.space(86)
+                                            text: root.fileArgumentsDraft
+                                            textFormat: TextEdit.PlainText
+                                            wrapMode: TextEdit.NoWrap
+                                            color: Commons.Color.foreground
+                                            selectionColor: Style.selectionFillFor(Commons.Color.foreground, Commons.Color.accent)
+                                            font.family: Style.font.family
+                                            font.pixelSize: Style.font.body
+                                            background: Rectangle { color: root.tint; radius: Style.cornerRadius; border.color: root.rule }
+                                            onTextChanged: root.fileArgumentsDraft = text
+                                            onActiveFocusChanged: if (activeFocus) root.ensureVisible(this)
+                                        }
+                                    }
+                                    FieldBlock {
+                                        label: root.t("SFTP connection")
+                                        Choice {
+                                            value: root.fileModeDraft
+                                            options: [{value: "mount", label: root.t("Mount with SSHFS")},
+                                                      {value: "uri", label: root.t("Open SFTP URL in app")}]
+                                            onChanged: function(v) { root.fileModeDraft = v }
+                                        }
+                                    }
+                                    Caption { text: root.fileModeDraft === "mount"
+                                        ? root.t("HostDeck manages SSH authentication and mounting. The app opens the local folder.")
+                                        : root.t("The app manages authentication and host-key verification. Saved passwords and key settings are not forwarded. Disconnect existing SSHFS mounts first.") }
+                                    InfoLine { iconText: "󰋼"; text: root.t("Missing apps produce an error when opening Files. No fallback app is launched.") }
+                                }
+                                ColumnLayout {
+                                    Layout.fillWidth: true
+                                    spacing: Style.space(6)
+                                    Rule { title: root.t("System details") }
+                                    Caption { text: root.t("Default fields for host cards. Each host can override this selection.") }
+                                    Repeater {
+                                        model: root.systemFieldNames
+                                        CheckRow {
+                                            required property string modelData
+                                            checked: root.systemFieldsDraft.indexOf(modelData) >= 0
+                                            text: root.systemFieldLabel(modelData)
+                                            onToggled: root.toggleSystemField(modelData)
+                                        }
+                                    }
+                                }
+                                ColumnLayout {
+                                    Layout.fillWidth: true
+                                    spacing: Style.space(6)
                                     Rule { title: root.t("Terminal"); trailing: "SSH · AI CLI · " + root.t("scripts") }
                                     Caption { text: root.t(root.vscodeEnabled ? "Opens SSH, AI CLI and scripts on every host. VS Code and Files open on their own." : "Opens SSH, AI CLI and scripts on every host. Files open on their own.") }
                                     Notice {
@@ -2730,13 +3013,13 @@ Ui.Panel {
                                                 Label {
                                                     text: terminalRow.modelData.label
                                                     font.bold: terminalRow.chosen
-                                                    color: terminalRow.modelData.available || terminalRow.chosen ? Color.foreground : root.secondaryText
+                                                    color: terminalRow.modelData.available || terminalRow.chosen ? Commons.Color.foreground : root.secondaryText
                                                     wrapMode: Text.NoWrap
                                                 }
                                                 Caption {
                                                     Layout.fillWidth: false
                                                     text: terminalRow.modelData.available ? root.t("installed") : root.t("not installed")
-                                                    color: terminalRow.modelData.available ? root.faintText : Color.urgent
+                                                    color: terminalRow.modelData.available ? root.faintText : Commons.Color.urgent
                                                     wrapMode: Text.NoWrap
                                                 }
                                             }
@@ -2820,7 +3103,7 @@ Ui.Panel {
                                     Layout.fillWidth: true
                                     spacing: Style.space(2)
                                     Stat { sign: "+"; value: root.importSummary ? root.importSummary.added : 0; label: root.t("new") }
-                                    Stat { sign: "~"; value: root.importSummary ? root.importSummary.replaced : 0; label: root.t("updated"); valueColor: Color.accent }
+                                    Stat { sign: "~"; value: root.importSummary ? root.importSummary.replaced : 0; label: root.t("updated"); valueColor: Commons.Color.accent }
                                     Stat { sign: "="; value: root.importSummary ? root.importSummary.skipped : 0; label: root.t("skipped"); valueColor: root.secondaryText }
                                 }
                                 RowLayout {
@@ -2871,11 +3154,11 @@ Ui.Panel {
                                             id: exportPathField
                                             enabled: !root.busy
                                             placeholderText: "/home/…/hosts.json"
-                                            accent: root.exportError !== "" ? Color.urgent : Color.accent
+                                            accent: root.exportError !== "" ? Commons.Color.urgent : Commons.Color.accent
                                             onTextChanged: { root.exportError = ""; root.exportDone = "" }
                                         }
                                     }
-                                    Caption { visible: root.exportError !== ""; text: root.exportError; color: Color.urgent }
+                                    Caption { visible: root.exportError !== ""; text: root.exportError; color: Commons.Color.urgent }
                                     Rule { title: root.t("Include") }
                                     CheckRow { checked: true; locked: true; text: root.t("Hosts and groups"); detail: root.t("Name, address, port, login, AI CLI. Auth becomes key / agent.") }
                                     CheckRow {
@@ -3028,8 +3311,8 @@ Ui.Panel {
                                     Controls.ScrollBar.horizontal.policy: Controls.ScrollBar.AlwaysOff
                                     Controls.ScrollBar.vertical.policy: Controls.ScrollBar.AsNeeded
                                     background: Ui.BorderSurface {
-                                        color: Style.controlFill(scriptContentField.activeFocus, false, Color.foreground, Color.accent)
-                                        borderSpec: Border.controlSpec(scriptContentField.activeFocus ? "focus" : "normal", Color.foreground, Color.accent)
+                                        color: Style.controlFill(scriptContentField.activeFocus, false, Commons.Color.foreground, Commons.Color.accent)
+                                        borderSpec: Border.controlSpec(scriptContentField.activeFocus ? "focus" : "normal", Commons.Color.foreground, Commons.Color.accent)
                                         radius: Style.cornerRadius
                                     }
                                     Controls.TextArea {
@@ -3037,8 +3320,8 @@ Ui.Panel {
                                         width: scriptContentScroll.availableWidth
                                         height: scriptContentScroll.contentHeight
                                         wrapMode: TextEdit.Wrap
-                                        color: Color.foreground
-                                        selectionColor: Style.selectionFillFor(Color.foreground, Color.accent)
+                                        color: Commons.Color.foreground
+                                        selectionColor: Style.selectionFillFor(Commons.Color.foreground, Commons.Color.accent)
                                         font.family: Style.font.family
                                         font.pixelSize: Style.font.body
                                         readOnly: root.scriptFromFile || !root.scriptContentLoaded
@@ -3074,7 +3357,7 @@ Ui.Panel {
                                 text: root.t("Delete script")
                                 iconText: "󰆴"
                                 bordered: true
-                                foreground: Color.urgent
+                                foreground: Commons.Color.urgent
                                 onClicked: root.requestConfirm("deleteScript", root.scriptId)
                             }
                         }
@@ -3256,7 +3539,7 @@ Ui.Panel {
         Layout.fillWidth: true
         textFormat: Text.PlainText
         wrapMode: Text.Wrap
-        color: Color.foreground
+        color: Commons.Color.foreground
         font.family: Style.font.family
         font.pixelSize: Style.font.body
     }
@@ -3280,7 +3563,7 @@ Ui.Panel {
             id: dropdown
             anchors.fill: parent
             showLabel: false
-            foreground: Color.foreground
+            foreground: Commons.Color.foreground
             background: root.popupSurface
             onChanged: function(v) { choice.changed(v) }
         }
@@ -3301,8 +3584,8 @@ Ui.Panel {
         size: Style.space(30)
         focusable: true
         opacity: enabled ? 1 : 0.45
-        color: active ? Style.selectedFillFor(Color.foreground, Color.accent) : (_showFocusRing ? Style.focusFillFor(hoverColor, hoverColor) : _hot ? Style.hoverFillFor(hoverColor, hoverColor) : "transparent")
-        Spinner { visible: iconAction.spinning; anchors.centerIn: parent; color: Color.foreground; font.pixelSize: Style.font.icon }
+        color: active ? Style.selectedFillFor(Commons.Color.foreground, Commons.Color.accent) : (_showFocusRing ? Style.focusFillFor(hoverColor, hoverColor) : _hot ? Style.hoverFillFor(hoverColor, hoverColor) : "transparent")
+        Spinner { visible: iconAction.spinning; anchors.centerIn: parent; color: Commons.Color.foreground; font.pixelSize: Style.font.icon }
     }
     // Accent-filled primary button: one per screen, the action ↵ triggers.
     component Primary: Rectangle {
@@ -3311,7 +3594,7 @@ Ui.Panel {
         property string iconText: ""
         property string tooltipText: ""
         property bool compact: false
-        property color fillColor: Color.accent
+        property color fillColor: Commons.Color.accent
         signal clicked()
         activeFocusOnTab: true
         implicitHeight: primaryRow.implicitHeight + Style.space(compact ? 10 : 16)
@@ -3321,7 +3604,7 @@ Ui.Panel {
              : primaryMouse.pressed ? Qt.darker(fillColor, 1.15)
              : primaryMouse.containsMouse || activeFocus ? Qt.lighter(fillColor, 1.1) : fillColor
         border.width: activeFocus ? 1 : 0
-        border.color: Color.foreground
+        border.color: Commons.Color.foreground
         Keys.onReturnPressed: if (enabled) clicked()
         Keys.onEnterPressed: if (enabled) clicked()
         Keys.onSpacePressed: if (enabled) clicked()
@@ -3361,7 +3644,7 @@ Ui.Panel {
     }
     component PrivacyButton: IconAction {
         iconText: root.addressesHidden ? "󰈉" : "󰈈"
-        foreground: root.addressesHidden ? Color.accent : Color.foreground
+        foreground: root.addressesHidden ? Commons.Color.accent : Commons.Color.foreground
         tooltipText: root.t(root.addressesHidden ? "Show logins and addresses" : "Hide logins and addresses")
         onClicked: State.PrivacyState.addressesHidden = !State.PrivacyState.addressesHidden
     }
@@ -3469,7 +3752,7 @@ Ui.Panel {
         property string text: ""
         property bool stacked: false
         default property alias trailing: noticeTrailing.data
-        readonly property color tone: kind === "error" ? Color.urgent : kind === "success" ? Color.foreground : Color.accent
+        readonly property color tone: kind === "error" ? Commons.Color.urgent : kind === "success" ? Commons.Color.foreground : Commons.Color.accent
         Layout.fillWidth: true
         implicitHeight: noticeRow.implicitHeight + Style.space(title !== "" ? 26 : 18)
         color: kind === "error" ? root.urgentTint : root.tint
@@ -3500,7 +3783,7 @@ Ui.Panel {
                 Label {
                     visible: notice.text !== ""
                     text: notice.text
-                    color: notice.title !== "" ? root.secondaryText : (notice.kind === "error" ? Color.urgent : Color.foreground)
+                    color: notice.title !== "" ? root.secondaryText : (notice.kind === "error" ? Commons.Color.urgent : Commons.Color.foreground)
                     font.pixelSize: notice.title !== "" ? Style.font.caption : Style.font.bodySmall
                     lineHeight: 1.3
                 }
@@ -3585,14 +3868,14 @@ Ui.Panel {
                 visible: tab.iconText !== ""
                 textFormat: Text.PlainText
                 text: tab.iconText
-                color: tab.selected ? Color.foreground : root.secondaryText
+                color: tab.selected ? Commons.Color.foreground : root.secondaryText
                 font.family: Style.font.family
                 font.pixelSize: Style.font.body
             }
             Text {
                 textFormat: Text.PlainText
                 text: tab.text
-                color: tab.selected || tabMouse.containsMouse ? Color.foreground : root.secondaryText
+                color: tab.selected || tabMouse.containsMouse ? Commons.Color.foreground : root.secondaryText
                 font.family: Style.font.family
                 font.pixelSize: Style.font.body
                 font.bold: tab.selected
@@ -3611,7 +3894,7 @@ Ui.Panel {
             anchors.bottom: parent.bottom
             width: parent.width
             height: Style.space(2)
-            color: Color.accent
+            color: Commons.Color.accent
             visible: tab.selected
         }
         MouseArea { id: tabMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: tab.clicked() }
@@ -3626,21 +3909,21 @@ Ui.Panel {
             anchors.bottom: parent.bottom
             width: parent.width
             height: 1
-            color: input.activeFocus ? Color.accent : root.rule
+            color: input.activeFocus ? Commons.Color.accent : root.rule
         }
         RowLayout {
             anchors.fill: parent
             anchors.leftMargin: Style.space(12)
             anchors.rightMargin: Style.space(10)
             spacing: Style.space(10)
-            Text { textFormat: Text.PlainText; text: "󰍉"; color: input.activeFocus ? Color.accent : root.secondaryText; font.family: Style.font.family; font.pixelSize: Style.font.title }
+            Text { textFormat: Text.PlainText; text: "󰍉"; color: input.activeFocus ? Commons.Color.accent : root.secondaryText; font.family: Style.font.family; font.pixelSize: Style.font.title }
             TextInput {
                 id: input
                 Layout.fillWidth: true
                 text: root.query
-                color: Color.foreground
-                selectionColor: Style.selectionFillFor(Color.foreground, Color.accent)
-                selectedTextColor: Color.foreground
+                color: Commons.Color.foreground
+                selectionColor: Style.selectionFillFor(Commons.Color.foreground, Commons.Color.accent)
+                selectedTextColor: Commons.Color.foreground
                 font.family: Style.font.family
                 font.pixelSize: Style.font.body
                 clip: true
@@ -3710,7 +3993,7 @@ Ui.Panel {
         Rectangle {
             height: parent.height
             width: parent.width * (root.checkTotal > 0 ? root.checkDone / root.checkTotal : 0)
-            color: Color.accent
+            color: Commons.Color.accent
             Behavior on width { NumberAnimation { duration: 200 } }
         }
     }
@@ -3795,7 +4078,7 @@ Ui.Panel {
         implicitHeight: root.wide ? Style.space(48) : Style.space(36)
         hasCursor: rowMouse.containsMouse && !selectedRow
         current: selectedRow || highlighted
-        currentFill: Style.hoverFillFor(Color.foreground, Color.accent)
+        currentFill: Style.hoverFillFor(Commons.Color.foreground, Commons.Color.accent)
         readonly property string kind: device ? root.statusKind(device) : ""
         opacity: kind === "offline" || kind === "error" ? 0.7 : 1
         onSelectedRowChanged: if (selectedRow) root.ensureVisible(hostRow)
@@ -3803,7 +4086,7 @@ Ui.Panel {
             visible: hostRow.selectedRow
             width: Style.space(2)
             height: parent.height
-            color: Color.accent
+            color: Commons.Color.accent
         }
         MouseArea {
             id: rowMouse
@@ -3840,8 +4123,8 @@ Ui.Panel {
                 columnSpacing: Style.space(12)
                 Text {
                     textFormat: Text.StyledText
-                    text: hostRow.device ? root.highlight(hostRow.device.name, Color.accent) : ""
-                    color: Color.foreground
+                    text: hostRow.device ? root.highlight(hostRow.device.name, Commons.Color.accent) : ""
+                    color: Commons.Color.foreground
                     font.family: Style.font.family
                     font.pixelSize: Style.font.subtitle
                     font.bold: true
@@ -3851,7 +4134,7 @@ Ui.Panel {
                 }
                 Text {
                     textFormat: Text.StyledText
-                    text: root.highlight(root.wide ? root.endpointPort(hostRow.device) : root.endpointText(hostRow.device), Color.accent)
+                    text: root.highlight(root.wide ? root.endpointPort(hostRow.device) : root.endpointText(hostRow.device), Commons.Color.accent)
                     color: root.faintText
                     font.family: Style.font.family
                     font.pixelSize: Style.font.caption
@@ -3892,8 +4175,8 @@ Ui.Panel {
         implicitHeight: Style.space(48)
         hasCursor: draftMouse.containsMouse
         current: true
-        currentFill: Style.hoverFillFor(Color.foreground, Color.accent)
-        Rectangle { width: Style.space(2); height: parent.height; color: Color.accent }
+        currentFill: Style.hoverFillFor(Commons.Color.foreground, Commons.Color.accent)
+        Rectangle { width: Style.space(2); height: parent.height; color: Commons.Color.accent }
         MouseArea { id: draftMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: { root.loadDraft(); root.page = "device"; root.restoreDraftFocus() } }
         RowLayout {
             anchors.fill: parent
@@ -3921,17 +4204,17 @@ Ui.Panel {
         property string tooltipText: ""
         readonly property bool launching: root.busy && root.launchTarget === target && root.current && root.launchHostId === root.current.id
         readonly property bool cursor: root.wide && root.detailZone && root.detailTargetIndex(target) === root.detailCursor
-        readonly property color ink: primary && enabled ? root.popupSurface : Color.foreground
+        readonly property color ink: primary && enabled ? root.popupSurface : Commons.Color.foreground
         signal clicked()
         Layout.fillWidth: true
         Layout.preferredWidth: 1
         implicitHeight: root.wide ? Style.space(56) : Style.space(70)
         radius: Style.cornerRadius
         opacity: enabled ? 1 : 0.45
-        color: primary && enabled ? (tileMouse.containsMouse || cursor ? Qt.lighter(Color.accent, 1.1) : Color.accent)
-             : tileMouse.containsMouse || cursor ? Style.hoverFillFor(Color.foreground, Color.accent) : root.tint
+        color: primary && enabled ? (tileMouse.containsMouse || cursor ? Qt.lighter(Commons.Color.accent, 1.1) : Commons.Color.accent)
+             : tileMouse.containsMouse || cursor ? Style.hoverFillFor(Commons.Color.foreground, Commons.Color.accent) : root.tint
         border.width: primary && enabled && !cursor ? 0 : 1
-        border.color: cursor ? Color.accent : root.rule
+        border.color: cursor ? Commons.Color.accent : root.rule
         MouseArea {
             id: tileMouse
             anchors.fill: parent
@@ -4039,8 +4322,8 @@ Ui.Panel {
         implicitHeight: Style.space(34)
         hasCursor: pickerMouse.containsMouse && !cursor
         current: cursor
-        currentFill: Style.hoverFillFor(Color.foreground, Color.accent)
-        Rectangle { visible: pickerRow.cursor; width: Style.space(2); height: parent.height; color: Color.accent }
+        currentFill: Style.hoverFillFor(Commons.Color.foreground, Commons.Color.accent)
+        Rectangle { visible: pickerRow.cursor; width: Style.space(2); height: parent.height; color: Commons.Color.accent }
         MouseArea { id: pickerMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: pickerRow.clicked() }
         HoverHandler { id: pickerHover }
         RowLayout {
@@ -4048,8 +4331,8 @@ Ui.Panel {
             anchors.leftMargin: Style.space(10)
             anchors.rightMargin: Style.space(12)
             spacing: Style.space(12)
-            KeyHint { visible: pickerRow.number > 0; text: String(pickerRow.number); tone: Color.foreground }
-            Text { textFormat: Text.PlainText; text: pickerRow.iconText; color: Color.accent; font.family: Style.font.family; font.pixelSize: Style.font.title }
+            KeyHint { visible: pickerRow.number > 0; text: String(pickerRow.number); tone: Commons.Color.foreground }
+            Text { textFormat: Text.PlainText; text: pickerRow.iconText; color: Commons.Color.accent; font.family: Style.font.family; font.pixelSize: Style.font.title }
             Label { text: pickerRow.text; font.bold: true; wrapMode: Text.NoWrap; elide: Text.ElideRight }
             Caption {
                 Layout.fillWidth: false
@@ -4084,7 +4367,7 @@ Ui.Panel {
             Layout.leftMargin: -panel.padding
             Layout.rightMargin: -panel.padding
             implicitHeight: 1
-            color: root.dockMode === "delete" || dock.down ? Color.urgent : Color.accent
+            color: root.dockMode === "delete" || dock.down ? Commons.Color.urgent : Commons.Color.accent
             opacity: 0.6
         }
         RowLayout {
@@ -4094,7 +4377,7 @@ Ui.Panel {
             Text {
                 textFormat: Text.PlainText
                 text: dock.d ? dock.d.name : ""
-                color: Color.foreground
+                color: Commons.Color.foreground
                 font.family: Style.font.family
                 font.pixelSize: Style.font.title
                 font.bold: true
@@ -4110,6 +4393,7 @@ Ui.Panel {
                 MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: root.copyEndpoint(dock.d) }
             }
             IconAction { iconText: "󰏫"; tooltipText: root.t("Edit host") + "  E"; onClicked: root.editDevice(dock.d) }
+            IconAction { iconText: "󰋼"; tooltipText: root.t("System details"); onClicked: root.openSystem(dock.d) }
             IconAction {
                 id: moreButton
                 iconText: "󰇘"
@@ -4134,7 +4418,7 @@ Ui.Panel {
             spacing: Style.space(10)
             Item { Layout.fillWidth: true }
             Action { text: root.t("Keep") + "   Esc"; bordered: true; onClicked: { root.hostDeleteId = ""; root.dockMode = "" } }
-            Primary { iconText: "󰆴"; text: root.t("Delete") + "   ↵"; fillColor: Color.urgent; enabled: !root.busy; onClicked: root.confirmHostDelete() }
+            Primary { iconText: "󰆴"; text: root.t("Delete") + "   ↵"; fillColor: Commons.Color.urgent; enabled: !root.busy; onClicked: root.confirmHostDelete() }
         }
         Notice {
             visible: dock.down && root.dockMode !== "delete"
@@ -4157,7 +4441,7 @@ Ui.Panel {
             LaunchTile {
                 target: "sftp"; iconText: "󰉋"; keyText: "F"; title: root.t("Files")
                 enabled: dock.d !== null && root.matchingSftpState(dock.d) !== "foreign"
-                tooltipText: dock.d && root.matchingSftpState(dock.d) === "mounted" ? root.t("Open mounted SFTP") : root.t("Mount SFTP using SSHFS")
+                tooltipText: root.filesDescription(dock.d)
                 onClicked: root.launchDevice(dock.d.id, "sftp")
             }
             LaunchTile {
@@ -4285,6 +4569,7 @@ Ui.Panel {
         readonly property var d: root.current
         readonly property bool down: d !== null && root.unreachable(d)
         readonly property string mount: root.matchingSftpState(d)
+        readonly property var systemInfo: root.matchingSystemInfo(d)
 
         EmptyState {
             visible: root.loaded && root.profiles.devices.length === 0
@@ -4317,7 +4602,7 @@ Ui.Panel {
                         Layout.preferredWidth: 1
                         spacing: Style.space(4)
                         Rectangle { Layout.fillWidth: true; implicitHeight: Style.space(2); color: root.rule }
-                        Caption { Layout.topMargin: Style.space(8); text: String(stepColumn.index + 1); color: Color.accent; font.bold: true }
+                        Caption { Layout.topMargin: Style.space(8); text: String(stepColumn.index + 1); color: Commons.Color.accent; font.bold: true }
                         Label { text: stepColumn.modelData[0]; font.bold: true }
                         Caption { text: stepColumn.modelData[1] }
                     }
@@ -4347,7 +4632,7 @@ Ui.Panel {
                         Text {
                             textFormat: Text.PlainText
                             text: detail.d ? detail.d.name : ""
-                            color: Color.foreground
+                            color: Commons.Color.foreground
                             font.family: Style.font.family
                             font.pixelSize: Style.font.display
                             font.bold: true
@@ -4416,7 +4701,7 @@ Ui.Panel {
                     LaunchTile {
                         target: "sftp"; iconText: "󰉋"; keyText: "F"; title: root.t("Files")
                         enabled: detail.mount !== "foreign"
-                        subtitle: detail.mount === "mounted" ? root.t("Mounted · open in Nautilus") : detail.mount === "foreign" ? root.t("Mount point is busy") : root.t("SFTP in Nautilus")
+                        subtitle: root.filesDescription(detail.d)
                         onClicked: root.launchDevice(detail.d.id, "sftp")
                     }
                     LaunchTile {
@@ -4426,6 +4711,34 @@ Ui.Panel {
                         subtitle: enabled ? "Remote-SSH" : root.t("Needs a key or SSH agent")
                         tooltipText: enabled ? "" : root.t("VS Code needs a key or SSH agent: Remote-SSH cannot use a saved password.")
                         onClicked: root.launchDevice(detail.d.id, "vscode")
+                    }
+                }
+                RowLayout {
+                    Layout.fillWidth: true
+                    Action { iconText: "󰋼"; text: root.t("System details"); onClicked: root.openSystem(detail.d) }
+                    Caption {
+                        text: detail.systemInfo && detail.systemInfo.fields
+                            ? root.t("Fetched at %1").arg(Qt.formatDateTime(new Date(detail.systemInfo.fetchedAt), "yyyy-MM-dd hh:mm:ss")) : root.t("Not collected yet")
+                    }
+                }
+                Caption {
+                    visible: !!detail.systemInfo && !!detail.systemInfo.fields
+                        && root.cardFields(detail.d).length === 0
+                    text: root.t("All system fields are hidden. Choose fields in Settings.")
+                }
+                ColumnLayout {
+                    visible: systemSummary.count > 0
+                    Layout.fillWidth: true
+                    spacing: Style.space(4)
+                    Repeater {
+                        id: systemSummary
+                        model: root.systemRows(detail.systemInfo, root.cardFields(detail.d))
+                        Caption {
+                            required property var modelData
+                            text: modelData.label + ": " + modelData.value
+                            layer.enabled: root.addressesHidden && modelData.sensitive
+                            layer.effect: PrivacyBlur {}
+                        }
                     }
                 }
                 RowLayout {
@@ -4456,7 +4769,7 @@ Ui.Panel {
                             Text {
                                 textFormat: Text.PlainText
                                 text: root.t("Choose agents in Edit host") + "  ›"
-                                color: Color.accent
+                                color: Commons.Color.accent
                                 font.family: Style.font.family
                                 font.pixelSize: Style.font.body
                                 font.bold: true
@@ -4515,7 +4828,7 @@ Ui.Panel {
                     Text {
                         textFormat: Text.PlainText
                         text: root.t("Add services in Edit host") + "  ›"
-                        color: Color.accent
+                        color: Commons.Color.accent
                         font.family: Style.font.family
                         font.pixelSize: Style.font.body
                         font.bold: true
@@ -4547,7 +4860,7 @@ Ui.Panel {
                     onClicked: root.call({op: "unmountSftp", id: detail.d.id})
                 }
                 Item { Layout.fillWidth: true }
-                Action { iconText: "󰆴"; text: root.t("Delete"); foreground: Color.urgent; onClicked: root.requestHostDelete(detail.d.id) }
+                Action { iconText: "󰆴"; text: root.t("Delete"); foreground: Commons.Color.urgent; onClicked: root.requestHostDelete(detail.d.id) }
             }
             Notice {
                 visible: root.hostDeleteId !== "" && detail.d !== null
@@ -4556,7 +4869,7 @@ Ui.Panel {
                 title: detail.d ? root.t("Delete %1 from HostDeck?").arg(detail.d.name) : ""
                 text: detail.d ? root.deleteConsequence(detail.d) : ""
                 Action { text: root.t("Keep") + "   Esc"; bordered: true; onClicked: { root.hostDeleteId = ""; root.dockMode = "" } }
-                Primary { iconText: "󰆴"; text: root.t("Delete") + "   ↵"; fillColor: Color.urgent; enabled: !root.busy; onClicked: root.confirmHostDelete() }
+                Primary { iconText: "󰆴"; text: root.t("Delete") + "   ↵"; fillColor: Commons.Color.urgent; enabled: !root.busy; onClicked: root.confirmHostDelete() }
             }
         }
     }
@@ -4606,17 +4919,17 @@ Ui.Panel {
         implicitHeight: Style.space(54)
         hasCursor: linkHover.hovered && !cursor
         current: cursor
-        currentFill: Style.hoverFillFor(Color.foreground, Color.accent)
+        currentFill: Style.hoverFillFor(Commons.Color.foreground, Commons.Color.accent)
         Rectangle { anchors.fill: parent; z: -1; color: root.tint }
         HoverHandler { id: linkHover }
-        Rectangle { visible: linkCard.cursor; width: Style.space(2); height: parent.height; color: Color.accent }
+        Rectangle { visible: linkCard.cursor; width: Style.space(2); height: parent.height; color: Commons.Color.accent }
         MouseArea { id: linkMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.openLink(linkCard.link) }
         RowLayout {
             anchors.fill: parent
             anchors.leftMargin: Style.space(12)
             anchors.rightMargin: Style.space(8)
             spacing: Style.space(10)
-            Text { textFormat: Text.PlainText; text: "󰌹"; color: Color.accent; font.family: Style.font.family; font.pixelSize: Style.font.title }
+            Text { textFormat: Text.PlainText; text: "󰌹"; color: Commons.Color.accent; font.family: Style.font.family; font.pixelSize: Style.font.title }
             ColumnLayout {
                 Layout.fillWidth: true
                 spacing: Style.space(2)
@@ -4657,8 +4970,8 @@ Ui.Panel {
         implicitHeight: detailText !== "" ? Style.space(54) : Style.space(40)
         hasCursor: targetMouse.containsMouse && !cursor
         current: cursor
-        currentFill: Style.hoverFillFor(Color.foreground, Color.accent)
-        Rectangle { visible: targetRow.cursor; width: Style.space(2); height: parent.height; color: Color.accent }
+        currentFill: Style.hoverFillFor(Commons.Color.foreground, Commons.Color.accent)
+        Rectangle { visible: targetRow.cursor; width: Style.space(2); height: parent.height; color: Commons.Color.accent }
         MouseArea { id: targetMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: if (!root.busy) targetRow.clicked() }
         RowLayout {
             anchors.fill: parent
@@ -4699,8 +5012,8 @@ Ui.Panel {
             Rectangle {
                 id: toastItem
                 required property var modelData
-                readonly property color tone: modelData.kind === "error" || modelData.kind === "warning" ? Color.urgent
-                                            : modelData.kind === "success" ? Color.foreground : Color.accent
+                readonly property color tone: modelData.kind === "error" || modelData.kind === "warning" ? Commons.Color.urgent
+                                            : modelData.kind === "success" ? Commons.Color.foreground : Commons.Color.accent
                 Layout.fillWidth: true
                 implicitHeight: toastRow.implicitHeight + Style.space(20)
                 color: Qt.lighter(root.popupSurface, 1.35)
@@ -4725,7 +5038,7 @@ Ui.Panel {
                             : toastItem.modelData.kind === "success" ? "󰄬"
                             : toastItem.modelData.kind === "warning" ? "󰒃"
                             : toastItem.modelData.kind === "error" ? "󰀦" : "󰆏"
-                        color: toastItem.modelData.kind === "error" || toastItem.modelData.kind === "warning" ? Color.urgent : root.secondaryText
+                        color: toastItem.modelData.kind === "error" || toastItem.modelData.kind === "warning" ? Commons.Color.urgent : root.secondaryText
                         font.family: Style.font.family
                         font.pixelSize: Style.font.title
                         RotationAnimation on rotation { running: toastItem.modelData.kind === "progress"; from: 0; to: 360; duration: 900; loops: Animation.Infinite }
@@ -4747,7 +5060,7 @@ Ui.Panel {
                         visible: toastItem.modelData.action === "verify"
                         textFormat: Text.PlainText
                         text: root.t("Verify") + "  K"
-                        color: Color.urgent
+                        color: Commons.Color.urgent
                         font.family: Style.font.family
                         font.pixelSize: Style.font.body
                         font.bold: true
@@ -4795,7 +5108,7 @@ Ui.Panel {
                         Layout.fillWidth: true
                         implicitHeight: Style.space(34)
                         hasCursor: usable && root.menuIndex === menuEntry.index
-                        fill: Style.hoverFillFor(Color.foreground, Color.accent)
+                        fill: Style.hoverFillFor(Commons.Color.foreground, Commons.Color.accent)
                         opacity: usable ? 1 : 0.45
                         MouseArea {
                             anchors.fill: parent
@@ -4812,11 +5125,11 @@ Ui.Panel {
                             Text {
                                 textFormat: Text.PlainText
                                 text: menuEntry.modelData.icon
-                                color: menuEntry.modelData.danger ? Color.urgent : root.secondaryText
+                                color: menuEntry.modelData.danger ? Commons.Color.urgent : root.secondaryText
                                 font.family: Style.font.family
                                 font.pixelSize: Style.font.title
                             }
-                            Label { text: menuEntry.modelData.label; color: menuEntry.modelData.danger ? Color.urgent : Color.foreground; wrapMode: Text.NoWrap }
+                            Label { text: menuEntry.modelData.label; color: menuEntry.modelData.danger ? Commons.Color.urgent : Commons.Color.foreground; wrapMode: Text.NoWrap }
                             Caption { Layout.fillWidth: false; text: menuEntry.modelData.key; color: root.faintText; wrapMode: Text.NoWrap }
                         }
                     }
@@ -4884,6 +5197,7 @@ Ui.Panel {
         property bool checked: false
         property bool locked: false
         property string text: ""
+        property bool privateDetail: false
         property string detail: ""
         signal toggled()
         Layout.fillWidth: true
@@ -4903,15 +5217,15 @@ Ui.Panel {
                 implicitWidth: Style.space(20)
                 implicitHeight: Style.space(20)
                 radius: Style.cornerRadius
-                color: checkRow.locked ? root.tint : checkRow.checked ? Qt.rgba(Color.accent.r, Color.accent.g, Color.accent.b, 0.6) : "transparent"
+                color: checkRow.locked ? root.tint : checkRow.checked ? Qt.rgba(Commons.Color.accent.r, Commons.Color.accent.g, Commons.Color.accent.b, 0.6) : "transparent"
                 border.width: checkRow.checked && !checkRow.locked ? 0 : 1
-                border.color: checkRow.activeFocus ? Color.accent : root.secondaryText
+                border.color: checkRow.activeFocus ? Commons.Color.accent : root.secondaryText
                 Text {
                     anchors.centerIn: parent
                     visible: checkRow.checked
                     textFormat: Text.PlainText
                     text: checkRow.locked ? "󰌾" : "󰄬"
-                    color: checkRow.locked ? root.secondaryText : Color.foreground
+                    color: checkRow.locked ? root.secondaryText : Commons.Color.foreground
                     font.family: Style.font.family
                     font.pixelSize: Style.font.bodySmall
                 }
@@ -4919,8 +5233,14 @@ Ui.Panel {
             ColumnLayout {
                 Layout.fillWidth: true
                 spacing: Style.space(2)
-                Label { text: checkRow.text; color: checkRow.locked ? root.secondaryText : Color.foreground; font.pixelSize: Style.font.subtitle }
-                Caption { visible: checkRow.detail !== ""; text: checkRow.detail; color: root.faintText }
+                Label { text: checkRow.text; color: checkRow.locked ? root.secondaryText : Commons.Color.foreground; font.pixelSize: Style.font.subtitle }
+                Caption {
+                    visible: checkRow.detail !== ""
+                    text: checkRow.detail
+                    color: root.secondaryText
+                    layer.enabled: checkRow.privateDetail
+                    layer.effect: PrivacyBlur {}
+                }
             }
         }
     }
@@ -4932,14 +5252,14 @@ Ui.Panel {
         radius: width / 2
         color: "transparent"
         border.width: 1
-        border.color: checked ? (danger ? Color.urgent : Color.accent) : root.secondaryText
+        border.color: checked ? (danger ? Commons.Color.urgent : Commons.Color.accent) : root.secondaryText
         Rectangle {
             visible: parent.checked
             anchors.centerIn: parent
             width: parent.width / 2
             height: width
             radius: width / 2
-            color: parent.danger ? Color.urgent : Color.accent
+            color: parent.danger ? Commons.Color.urgent : Commons.Color.accent
         }
     }
     component Step: RowLayout {
@@ -4952,12 +5272,12 @@ Ui.Panel {
         KeyHint {
             text: String(step.number)
             tone: step.done ? root.popupSurface : root.faintText
-            color: step.done ? Color.accent : root.tint
+            color: step.done ? Commons.Color.accent : root.tint
         }
         Label {
             Layout.fillWidth: false
             text: step.text
-            color: step.done ? Color.foreground : root.faintText
+            color: step.done ? Commons.Color.foreground : root.faintText
             font.bold: step.current
             wrapMode: Text.NoWrap
         }
@@ -4967,7 +5287,7 @@ Ui.Panel {
         property string sign: "+"
         property int value: 0
         property string label: ""
-        property color valueColor: Color.foreground
+        property color valueColor: Commons.Color.foreground
         Layout.fillWidth: true
         Layout.preferredWidth: 1
         implicitHeight: statColumn.implicitHeight + Style.space(20)
@@ -5071,7 +5391,7 @@ Ui.Panel {
                 visible: groupRow.editing || groupRow.confirming || root.highlightGroupId === groupRow.modelData.id
                 width: Style.space(2)
                 height: parent.height
-                color: groupRow.confirming || groupRow.editing && root.groupEditInvalid ? Color.urgent : Color.accent
+                color: groupRow.confirming || groupRow.editing && root.groupEditInvalid ? Commons.Color.urgent : Commons.Color.accent
             }
             MouseArea {
                 anchors.fill: parent
@@ -5101,7 +5421,7 @@ Ui.Panel {
                     Layout.preferredWidth: root.wide ? Style.space(236) : -1
                     maximumLength: 100
                     rightPadding: Style.space(64)
-                    accent: root.groupEditInvalid ? Color.urgent : Color.accent
+                    accent: root.groupEditInvalid ? Commons.Color.urgent : Commons.Color.accent
                     onVisibleChanged: if (visible) { text = groupRow.modelData.name; forceActiveFocus(); selectAll() }
                     onTextChanged: { root.groupEditName = text; if (text.trim() !== "") root.groupEditInvalid = false }
                     Keys.onReturnPressed: root.commitGroupEdit()
@@ -5114,7 +5434,7 @@ Ui.Panel {
                         anchors.verticalCenter: parent.verticalCenter
                         textFormat: Text.PlainText
                         text: groupNameEdit.text.length + "/100"
-                        color: root.groupEditInvalid ? Color.urgent : root.faintText
+                        color: root.groupEditInvalid ? Commons.Color.urgent : root.faintText
                         font.family: Style.font.family
                         font.pixelSize: Style.font.caption
                     }
@@ -5153,8 +5473,8 @@ Ui.Panel {
                 IconAction {
                     visible: !groupRow.editing
                     iconText: groupRow.reason === "" ? "󰆴" : "󰌾"
-                    hoverColor: Color.urgent
-                    foreground: groupRow.reason === "" ? Color.urgent : root.faintText
+                    hoverColor: Commons.Color.urgent
+                    foreground: groupRow.reason === "" ? Commons.Color.urgent : root.faintText
                     enabled: !root.busy
                     tooltipText: groupRow.reason === "" ? root.t("Delete") : groupRow.reason
                     onClicked: if (groupRow.reason === "") { root.groupEditId = ""; root.groupDeleteId = groupRow.modelData.id; keySink.forceActiveFocus() }
@@ -5166,7 +5486,7 @@ Ui.Panel {
             Layout.leftMargin: Style.space(14)
             Layout.topMargin: Style.space(4)
             text: "󰀦  " + root.t("Enter a group name")
-            color: Color.urgent
+            color: Commons.Color.urgent
         }
         Notice {
             visible: groupRow.confirming
@@ -5178,7 +5498,7 @@ Ui.Panel {
             Primary {
                 iconText: "󰆴"
                 text: root.t("Delete") + "   ↵"
-                fillColor: Color.urgent
+                fillColor: Commons.Color.urgent
                 enabled: !root.busy
                 onClicked: { root.groupDeleteId = ""; root.call({op: "deleteGroup", id: groupRow.modelData.id}) }
             }

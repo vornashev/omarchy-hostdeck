@@ -249,7 +249,9 @@ class PersistenceTests(Isolated):
                         self.assertEqual(migrated.load(), self.data)
                         self.assertEqual(migrated.load_settings(),
                                          {"version": 1, "defaultTerminal": "kitty", "language": "en", "layout": "auto",
-                                          "watchMinutes": 0})
+                                          "watchMinutes": 0, "fileManager": "nautilus", "fileMode": "mount",
+                                          "fileExecutable": "", "fileArguments": ["{target}"],
+                                          "systemFields": list(h.SYSTEM_FIELDS)})
                 self.assertEqual(migrated.root, base / h.APP)
                 self.assertFalse(legacy.exists())
                 self.assertEqual(stat.S_IMODE(migrated.root.stat().st_mode), 0o700)
@@ -761,7 +763,9 @@ class SettingsTests(Isolated):
         with patch.object(h.shutil, "which", side_effect=lambda name: "/synthetic/kitty" if name == "kitty" else None):
             result = h.dispatch({"op": "getSettings"}, other)
         self.assertEqual(result["globalSettings"], {"version": 1, "defaultTerminal": "kitty", "language": "en", "layout": "auto",
-                                          "watchMinutes": 0})
+                                          "watchMinutes": 0, "fileManager": "nautilus", "fileMode": "mount",
+                                          "fileExecutable": "", "fileArguments": ["{target}"],
+                                          "systemFields": list(h.SYSTEM_FIELDS)})
         self.assertEqual([t["value"] for t in result["terminals"] if t["available"]], ["kitty"])
         self.assertEqual(self.store.path.read_bytes(), before)
         self.assertEqual(stat.S_IMODE(self.store.settings_path.stat().st_mode), 0o600)
@@ -920,7 +924,7 @@ class ClientTests(Isolated):
             result = self.call(op="launch", id=ID, client="sftp")
         self.assertEqual(result, {"message": "SFTP открыт", "sftpStates": {ID: state}})
         scan.assert_not_called()
-        launch.assert_called_once_with(self.data["devices"][0], "sftp", None)
+        launch.assert_called_once_with(self.data["devices"][0], "sftp", None, self.store.load_settings())
 
     def test_ssh_safe_argv_hostkey_and_config_isolation(self):
         args = h.ssh_argv(profile(keyPath="/home/tema/My Key"))

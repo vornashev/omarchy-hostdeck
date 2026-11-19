@@ -10,6 +10,8 @@ host scripts, and service links in one native QML/Quickshell panel.
 
 Plugin ID: `vornashev.hostdeck` · License: [MIT](LICENSE)
 
+**New in 0.9.0** — Host cards can show cached Fastfetch data with per-host fields and refresh schedules. The System page also offers to install Fastfetch when missing. SFTP now supports a configurable file manager and direct SFTP URLs.
+
 ## Install
 
 ```bash
@@ -41,7 +43,8 @@ your data and saved secrets move to the new namespace on first start.
 | `ssh`, `ssh-keyscan`, `ssh-keygen` (OpenSSH client) | Connections and host-key review |
 | Ghostty, Kitty, Alacritty, or foot | SSH, AI CLI, and script terminals |
 | `secret-tool` and an unlocked Secret Service (optional) | Saved passwords and key passphrases |
-| `sshfs`, FUSE 3, Nautilus (optional) | SFTP |
+| `sshfs`, FUSE 3, and a file manager (optional) | Managed SFTP mounts |
+| `fastfetch` on the remote host (optional) | System details |
 | `wl-copy` (optional) | Copying SSH endpoints and link URLs |
 
 Remote AI CLIs must already be installed, authenticated, and available in the
@@ -54,6 +57,7 @@ remote user's login-shell `PATH`. The plugin does not install remote software.
 - [Using HostDeck](#using-hostdeck): [panel and keyboard](#panel-and-keyboard),
   [bar icon](#bar-icon), [service links](#service-links),
   [host scripts](#host-scripts), [settings](#settings),
+  [system details](#system-details), [SFTP modes](#file-manager-and-sftp-modes),
   [screen-sharing privacy](#screen-sharing-privacy)
 - [Security and data](#security-and-data): [security model](#security-model),
   [authentication secrets](#authentication-secrets),
@@ -73,7 +77,10 @@ remote user's login-shell `PATH`. The plugin does not install remote software.
   progress line. Latency uses theme colors only: neutral through 50 ms, accent
   from 51 to 99 ms, urgent from 100 ms.
 - **Connect:** SSH in Ghostty, Kitty, Alacritty, or foot; SFTP mounts through
-  SSHFS and opens in Nautilus.
+  SSHFS and opens in Nautilus, Strata, or a configured app. An optional direct
+  SFTP URL mode lets the app handle its own connection.
+- **System details:** collect OS, kernel, hardware model, CPU, memory, and disk
+  usage over SSH. Each host has a local snapshot, a refresh mode and a choice of fields for its card.
 - **AI CLIs:** per-host selection of interactive agents with an optional
   project directory (see the table below).
 - **Host scripts:** explicitly saved per-host scripts, run in a terminal over
@@ -243,12 +250,76 @@ Open the catalog and select **Settings**:
 - **Panel layout:** Auto, Compact (narrow), or Wide.
 - **Check pinned hosts:** a − / + stepper over Off, 5, 15, 30, and 60 minutes.
 - **Default terminal:** Ghostty, Kitty, Alacritty, or foot.
+- **File manager:** Nautilus (the existing default), Strata, or a custom app
+  named in `PATH`. Custom arguments are entered one per line, with exactly
+  one standalone `{target}` line. They are passed literally as argv, without
+  shell interpretation; do not put credentials in arguments.
+- **SFTP connection:** mount with SSHFS (default), or open an SFTP URL in the
+  chosen app. Missing apps produce an error without a fallback. The custom
+  app must support the selected kind of target.
+- **System details:** select the default fields for host cards.
 
 The saved terminal applies to new SSH and AI CLI windows on every host. A
 terminal that is not installed can be picked but blocks **Save**; there is no
 silent fallback. SFTP remains a separate action. All settings are
 machine-local, take effect after **Save**, and are excluded from profile
 import/export.
+
+### System details
+
+Use **System details** in the wide detail pane, the compact dock's information
+button, or a host's menu. **Get system details** / **Refresh** (or **R** on that
+page) runs a fixed fastfetch command over SSH, independently of ping/port
+checks. It requires fastfetch in the remote user's non-interactive `PATH` and
+an explicitly verified host key. Missing fastfetch, authentication failures,
+timeouts, and invalid output are shown on the page; unavailable individual
+fields do not discard the rest of the result.
+
+If Fastfetch is missing, click the download icon beside the message to install
+it over SSH in the configured terminal. HostDeck uses the remote host's
+configured repositories via `apt-get`, `dnf`, `pacman`, `zypper`, or `apk`.
+Follow any package manager or `sudo`/`doas` prompts there, then refresh system
+details. Installation requires a verified host key and a package available in
+the host's repositories.
+
+Collection uses the saved password or saved key passphrase through the same
+askpass pipe as SSH, or an available SSH agent/key. It cannot display an
+interactive password/passphrase prompt. Unlock an agent key or configure the
+saved credential before retrying. The remote command ignores the fastfetch
+configuration and has a 30-second deadline and a 256 KiB output limit.
+Only normalized supported data is returned to QML; raw output,
+remote diagnostics, serial numbers, and UUIDs are not returned.
+
+HostDeck stores the last successful snapshot locally with its collection time.
+Opening the panel or selecting a host shows cached data immediately. **On view**
+refreshes a missing snapshot or one at least five minutes old. **Scheduled**
+refreshes even with the panel closed at a per-host interval of 5, 15 (default),
+30 or 60 minutes. **Manual** uses the refresh button or **R**. Failed refreshes
+preserve the last snapshot. Automatic retries wait until the next interval.
+
+On the System page, check the categories to show in the host card. Changes save
+immediately. **Use global field settings** restores inheritance. The System page
+always shows all six categories, with one checkbox for all disks. Hardware and
+disk details are blurred in privacy mode. Snapshots and per-host preferences
+are excluded from export. Changing the SSH identity clears the snapshot, and
+deleting the host clears both records.
+
+### File manager and SFTP modes
+
+In **Mount with SSHFS**, HostDeck retains authentication, strict host-key
+verification, mount tracking, and disconnect controls. Nautilus receives a local
+file URI; Strata and custom apps receive the absolute local mount path. An app
+launch failure leaves an existing mount intact so it can be opened again or
+disconnected.
+
+In **Open SFTP URL in app**, the app receives only
+`sftp://user@host:port/path` (IPv6 and spaces are encoded). An empty remote folder
+opens `/`. HostDeck still requires its host-key review before launching, but the
+external app performs its own authentication and host-key verification; it may
+prompt separately. Saved passwords, private-key paths, and passphrases are never
+forwarded. No HostDeck SSHFS mount is created or tracked, and disconnect happens
+in the external app. Disconnect any existing HostDeck mount for that host before
+using this mode. Custom apps must perform their own host-key verification.
 
 ### Screen-sharing privacy
 
@@ -302,8 +373,8 @@ the profile contains only the boolean setting and the key path.
   existing passphrase only while all of those bindings remain unchanged.
 - Disabling the option or deleting the host clears the matching passphrase
   after the profile change is safely published.
-- Saved key passphrases are supplied only to terminal SSH, AI CLI SSH, and
-  SFTP.
+- Saved key passphrases are supplied only to terminal SSH, AI CLI SSH,
+  managed SSHFS, and SSH sessions for Fastfetch collection and installation. Direct SFTP URL apps handle their own authentication.
 - Exports always reset the saved-passphrase setting; new imported hosts start
   with it disabled, while replacement imports preserve the local
   authentication, key path, and setting.

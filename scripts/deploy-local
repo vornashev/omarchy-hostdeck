@@ -25,7 +25,23 @@ git -C "$root" ls-files -z --cached --others --exclude-standard \
 rsync -a --delete "$stage/" "$target/"
 chmod 700 "$target/askpass.py"
 printf 'Installed copy updated: %s\n' "$target"
-omarchy-restart-shell >/dev/null 2>&1
+if restart_output=$(omarchy-restart-shell 2>&1); then
+  [[ -z $restart_output ]] || printf '%s\n' "$restart_output"
+else
+  printf '%s\n' "$restart_output" >&2
+  # Core IPC can be ready before the notification service owns its bus name.
+  # Recover only this post-restart timeout. Propagate lock and startup failures.
+  [[ $restart_output == *"Omarchy shell restarted, but its notification service did not become ready." ]] || exit 1
+  notifications_ready() {
+    [[ $(busctl --user --timeout=1s call org.freedesktop.DBus /org/freedesktop/DBus \
+      org.freedesktop.DBus NameHasOwner s org.freedesktop.Notifications) == "b true" ]]
+  }
+  for _ in {1..20}; do
+    notifications_ready && break
+    sleep 0.5
+  done
+  notifications_ready || exit 1
+fi
 for _ in {1..20}; do
   omarchy-shell shell ping >/dev/null 2>&1 && { echo 'Shell restarted'; exit 0; }
   sleep 0.5
