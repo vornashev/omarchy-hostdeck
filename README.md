@@ -267,16 +267,22 @@ import/export.
 
 ### System details
 
-Use **System details** in the wide detail pane, the compact dock's information
-button, or a host's menu. **Get system details** / **Refresh** (or **R** on that
-page) runs a fixed fastfetch command over SSH, independently of ping/port
-checks. It requires fastfetch in the remote user's non-interactive `PATH` and
-an explicitly verified host key. Missing fastfetch, authentication failures,
-timeouts, and invalid output are shown on the page; unavailable individual
-fields do not discard the rest of the result.
+In the wide detail pane, cached system vitals sit directly below the status
+strip (`PING` / `SSH PORT` / `AUTH` / `SFTP`) with inline memory and disk
+bars (highlighting usage at 85% and above in the theme's urgent color). Click
+the strip to expand full specifications, additional mountpoints, and quick
+**Refresh** / **Fields** actions in place, or press **I** (or use the host
+menu) to open the **System** page. In compact mode, the dock's information
+button (or **I**) toggles a compact system tray above the dock. **Get system
+details** / **Refresh** (or **R** on the System page) runs a fixed fastfetch
+command over SSH, independently of ping/port checks. It requires fastfetch in
+the remote user's non-interactive `PATH` and an explicitly verified host key.
+Missing fastfetch, authentication failures, timeouts, and invalid output are
+shown inline and on the System page; unavailable individual fields do not
+discard the rest of the result.
 
-If Fastfetch is missing, click the download icon beside the message to install
-it over SSH in the configured terminal. HostDeck uses the remote host's
+If Fastfetch is missing, click **Install Fastfetch** beside the message to
+install it over SSH in the configured terminal. HostDeck uses the remote host's
 configured repositories via `apt-get`, `dnf`, `pacman`, `zypper`, or `apk`.
 Follow any package manager or `sudo`/`doas` prompts there, then refresh system
 details. Installation requires a verified host key and a package available in

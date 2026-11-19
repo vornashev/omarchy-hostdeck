@@ -65,6 +65,11 @@ QtObject {
         if (!collect(d, "manual") && !pendingManual.some(host => host.id === d.id))
             pendingManual = pendingManual.concat([d])
     }
+    function resetAttempt(id) {
+        const s = id && cache[id]
+        if (!s) return
+        cache = Object.assign({}, cache, {[id]: Object.assign({}, s, {attempted: 0})})
+    }
     function poll() {
         while (pendingManual.length) {
             if (!collect(pendingManual[0], "manual")) return

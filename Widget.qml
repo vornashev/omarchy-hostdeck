@@ -540,40 +540,136 @@ Ui.Panel {
     function fetchSystemInfo() {
         if (systemHost) State.SystemState.manual(systemHost)
     }
+    function refreshSystemHost(d) {
+        if (d) State.SystemState.manual(d)
+    }
+    function installFastfetch(hostId, token) {
+        if (!hostId || !token) return
+        State.SystemState.resetAttempt(hostId)
+        call({op: "installFastfetch", id: hostId, token: token})
+    }
     function systemFieldLabel(name) {
-        var labels = {os: t("Operating system"), kernel: t("Kernel"), host: t("Hardware"),
-                      cpu: t("CPU"), memory: t("Memory"), disk: t("Disks")}
+        const labels = {os: t("Operating system"), kernel: t("Kernel"), host: t("Hardware"),
+                        cpu: t("CPU"), memory: t("Memory"), disk: t("Disks")}
         return labels[name] || name
     }
+    function systemShortLabel(name) {
+        const labels = {os: t("OS"), kernel: t("Kernel"), host: t("Hardware"),
+                        cpu: t("CPU"), memory: t("Memory"), disk: t("Disk")}
+        return labels[name] || name
+    }
+    function systemModeLabel(mode) {
+        const labels = {view: t("On view"), schedule: t("Scheduled"), manual: t("Manual")}
+        return labels[mode] || ""
+    }
+    function systemAge(info) {
+        if (!info || !info.fetchedAt) return ""
+        const fetched = Date.parse(info.fetchedAt)
+        return isFinite(fetched) ? ageText(Math.max(0, (clockMs - fetched) / 1000)) : ""
+    }
+    function systemFetchedTooltip(info) {
+        if (!info || !info.fetchedAt) return ""
+        return t("Fetched at %1").arg(Qt.formatDateTime(new Date(info.fetchedAt), "yyyy-MM-dd hh:mm:ss"))
+    }
     function toggleSystemField(name) {
-        var selected = systemFieldsDraft.slice()
-        var at = selected.indexOf(name)
+        const selected = systemFieldsDraft.slice()
+        const at = selected.indexOf(name)
         if (at < 0) selected.push(name)
         else selected.splice(at, 1)
-        systemFieldsDraft = systemFieldNames.filter(function(f) { return selected.indexOf(f) >= 0 })
+        systemFieldsDraft = systemFieldNames.filter(f => selected.indexOf(f) >= 0)
     }
     function bytesText(bytes) {
-        var units = ["B", "KiB", "MiB", "GiB", "TiB", "PiB"]
-        var unit = 0
-        while (bytes >= 1024 && unit < units.length - 1) { bytes /= 1024; unit++ }
-        return Number(bytes).toLocaleString(Qt.locale(language), "f", unit > 0 ? 1 : 0) + " " + units[unit]
+        const units = ["B", "KiB", "MiB", "GiB", "TiB", "PiB"]
+        let unit = 0
+        let n = bytes
+        while (n >= 1024 && unit < units.length - 1) { n /= 1024; unit++ }
+        return Number(n).toLocaleString(Qt.locale(language), "f", unit > 0 ? 1 : 0) + " " + units[unit]
+    }
+    function usagePercent(value) {
+        if (!value || !value.total || value.total <= 0) return -1
+        return Math.max(0, Math.min(100, Math.round(value.used * 100 / value.total)))
+    }
+    function compactUsageText(value) {
+        if (!value || !value.total || value.total <= 0) return t("Not available")
+        const units = ["B", "KiB", "MiB", "GiB", "TiB", "PiB"]
+        const split = bytes => {
+            let u = 0, n = bytes
+            while (n >= 1024 && u < units.length - 1) { n /= 1024; u++ }
+            return {n: n, u: u}
+        }
+        const fmt = p => Number(p.n).toLocaleString(Qt.locale(language), "f", p.u > 0 && p.n < 100 ? 1 : 0)
+        const a = split(value.used), b = split(value.total)
+        if (a.u === b.u) return fmt(a) + " / " + fmt(b) + " " + units[b.u]
+        return fmt(a) + " " + units[a.u] + " / " + fmt(b) + " " + units[b.u]
     }
     function usageText(value) {
         return t("%1 / %2 used (%3%)").arg(bytesText(value.used)).arg(bytesText(value.total))
             .arg(Math.round(value.used * 100 / value.total))
     }
+    function systemFieldText(info, name) {
+        const value = info && info.fields ? info.fields[name] : null
+        if (!value) return ""
+        return value.text + (value.threads ? t(value.threads === 1 ? " · %1 thread" : " · %1 threads").arg(value.threads) : "")
+    }
+    function systemDisks(info) {
+        const list = info && info.fields ? info.fields.disk : null
+        return Array.isArray(list) ? list : []
+    }
+    function systemPrimaryDisk(info) {
+        const list = systemDisks(info)
+        if (!list.length) return null
+        for (let i = 0; i < list.length; i++) if (list[i].mountpoint === "/") return list[i]
+        return list[0]
+    }
+    function systemExtraDisks(info) {
+        const list = systemDisks(info)
+        const primary = systemPrimaryDisk(info)
+        return primary ? list.filter(disk => disk !== primary) : []
+    }
+    function systemSpecRows(info, names) {
+        if (!info || !info.fields) return []
+        const order = ["os", "kernel", "host", "cpu"]
+        const rows = []
+        order.forEach(name => {
+            if (names.indexOf(name) < 0) return
+            const text = root.systemFieldText(info, name)
+            rows.push({
+                key: name,
+                label: root.systemShortLabel(name),
+                value: text !== "" ? text : root.t("Not available"),
+                available: text !== "",
+                sensitive: name === "host"
+            })
+        })
+        return rows
+    }
+    function systemIdentitySummary(info, names) {
+        const order = ["os", "cpu", "host", "kernel"]
+        const enabled = order.filter(name => names.indexOf(name) >= 0)
+        let primary = null
+        const parts = []
+        enabled.forEach(name => {
+            const text = root.systemFieldText(info, name)
+            if (text === "") return
+            const item = {key: name, text: text, sensitive: name === "host"}
+            if (!primary) primary = item
+            else if (parts.length < 2) parts.push(item)
+        })
+        if (!primary) return {primary: {key: "", text: root.t("Not available"), sensitive: false}, subParts: []}
+        return {primary: primary, subParts: parts}
+    }
     function systemRows(info, names) {
         if (!info || !info.fields) return []
-        var rows = []
-        names.forEach(function(name) {
-            var value = info.fields[name]
-            var label = root.systemFieldLabel(name)
+        const rows = []
+        names.forEach(name => {
+            const value = info.fields[name]
+            const label = root.systemFieldLabel(name)
             if (!value) rows.push({label: label, value: root.t("Not available"), sensitive: false})
-            else if (name === "disk") value.forEach(function(disk) {
+            else if (name === "disk") value.forEach(disk => {
                 rows.push({label: label + " · " + disk.mountpoint, value: root.usageText(disk), sensitive: true})
             })
             else rows.push({label: label, sensitive: name === "host", value: name === "memory" ? root.usageText(value)
-                : value.text + (value.threads ? root.t(value.threads === 1 ? " · %1 thread" : " · %1 threads").arg(value.threads) : "")})
+                : root.systemFieldText(info, name)})
         })
         return rows
     }
@@ -1478,6 +1574,11 @@ Ui.Panel {
             else if (hostLinks(d).length) { dockMode = dockMode === "links" ? "" : "links"; dockCursor = 0 }
             return true
         }
+        if (letter === "i") {
+            if (wide) openSystem(d)
+            else dockMode = dockMode === "system" ? "" : "system"
+            return true
+        }
         if (text !== "" && text.trim() !== "") { typeIntoSearch(text); return true }
         return false
     }
@@ -2145,7 +2246,7 @@ Ui.Panel {
                         Layout.fillWidth: true
                         Layout.fillHeight: true
                         spacing: Style.space(2)
-                        opacity: !root.wide && (root.dockMode === "ai" || root.dockMode === "scripts" || root.dockMode === "links") ? 0.6 : 1
+                        opacity: !root.wide && (root.dockMode === "ai" || root.dockMode === "scripts" || root.dockMode === "links" || root.dockMode === "system") ? 0.6 : 1
                         DraftRow {
                             visible: root.wide && State.DraftState.active && State.DraftState.editId === ""
                         }
@@ -2291,8 +2392,18 @@ Ui.Panel {
                         spacing: Style.space(12)
                         PageHeader {
                             title: root.t("System")
-                            subtitle: root.systemHost ? root.systemHost.name : root.t("Select a host on the left")
+                            subtitle: root.systemHost
+                                ? root.systemHost.name + (root.systemResult && root.systemResult.fetchedAt ? " · " + root.systemAge(root.systemResult) : "")
+                                : root.t("Select a host on the left")
                             Action { text: root.t("Back"); onClicked: root.showList() }
+                            Primary {
+                                compact: true
+                                iconText: "󰑐"
+                                text: root.systemLoading ? root.t("Loading…")
+                                    : root.systemResult && root.systemResult.fields ? root.t("Refresh") : root.t("Get system details")
+                                enabled: root.systemHost !== null && !root.systemLoading && !root.busy
+                                onClicked: root.fetchSystemInfo()
+                            }
                         }
                         Scroll {
                             Layout.fillWidth: true
@@ -2300,25 +2411,91 @@ Ui.Panel {
                             ColumnLayout {
                                 Layout.fillWidth: true
                                 spacing: Style.space(12)
-                                Caption { text: root.t("System details are collected over SSH using Fastfetch.") }
-                                RowLayout {
-                                    Layout.fillWidth: true
-                                    Primary {
-                                        iconText: "󰑐"
-                                        text: root.systemLoading ? root.t("Loading…")
-                                            : root.systemResult && root.systemResult.fields ? root.t("Refresh") : root.t("Get system details")
-                                        enabled: root.systemHost !== null && !root.systemLoading && !root.busy
-                                        onClicked: root.fetchSystemInfo()
+                                SystemSweepLine { visible: root.systemLoading }
+                                Notice {
+                                    id: systemNotice
+                                    readonly property string installToken: root.systemResult ? root.systemResult.fastfetchInstallToken || "" : ""
+                                    visible: text !== ""
+                                    kind: "error"
+                                    title: installToken !== "" ? root.t("Fastfetch was not found on the remote host.") : ""
+                                    text: installToken !== "" ? root.t("Required for OS, CPU, memory, and disk details.")
+                                        : root.systemResult ? root.systemResult.error || "" : ""
+                                    Action {
+                                        visible: systemNotice.installToken !== ""
+                                        enabled: !root.busy && !root.systemLoading
+                                        iconText: "󰇚"
+                                        text: root.t("Install Fastfetch")
+                                        bordered: true
+                                        tooltipText: root.t("Install Fastfetch on the remote host")
+                                        onClicked: root.installFastfetch(root.systemHostId, systemNotice.installToken)
                                     }
-                                    Action { text: root.t("Verify host key"); enabled: root.systemHost !== null && !root.busy; onClicked: root.inspectHostKey(root.systemHostId) }
                                 }
-                                Caption { text: root.t("Refresh mode") }
-                                Segmented {
-                                    enabled: !!root.systemHost && !root.busy
-                                    value: root.systemPolicy.mode
-                                    options: [{value: "view", label: root.t("On view")}, {value: "schedule", label: root.t("Scheduled")},
-                                              {value: "manual", label: root.t("Manual")}]
-                                    onChanged: function(v) { root.saveSystemChange({mode: v}) }
+                                GridLayout {
+                                    id: systemPageGauges
+                                    visible: root.systemResult !== null && !!root.systemResult.fields
+                                    readonly property var mem: root.systemResult && root.systemResult.fields ? root.systemResult.fields.memory : null
+                                    readonly property var diskList: root.systemDisks(root.systemResult)
+                                    Layout.fillWidth: true
+                                    columns: root.wide ? Math.min(3, Math.max(1, 1 + diskList.length)) : 1
+                                    columnSpacing: Style.space(2)
+                                    rowSpacing: Style.space(2)
+                                    SystemGaugeCell {
+                                        label: root.t("Memory")
+                                        valueText: root.compactUsageText(systemPageGauges.mem)
+                                        percent: root.usagePercent(systemPageGauges.mem)
+                                    }
+                                    Repeater {
+                                        model: systemPageGauges.diskList
+                                        SystemGaugeCell {
+                                            required property var modelData
+                                            label: root.t("Disk")
+                                            mount: modelData.mountpoint
+                                            valueText: root.compactUsageText(modelData)
+                                            percent: root.usagePercent(modelData)
+                                            blurred: true
+                                        }
+                                    }
+                                    SystemGaugeCell {
+                                        visible: systemPageGauges.diskList.length === 0
+                                        label: root.t("Disks")
+                                        valueText: root.t("Not available")
+                                        percent: -1
+                                    }
+                                }
+                                ColumnLayout {
+                                    visible: root.systemResult !== null && !!root.systemResult.fields
+                                    Layout.fillWidth: true
+                                    spacing: Style.space(8)
+                                    Rule {
+                                        title: root.t("Specifications")
+                                        trailing: root.systemFetchedTooltip(root.systemResult)
+                                    }
+                                    SystemSpecTable {
+                                        rows: root.systemSpecRows(root.systemResult, ["os", "kernel", "host", "cpu"])
+                                    }
+                                }
+                                Tinted {
+                                    visible: root.systemResult === null || !root.systemResult.fields
+                                    Caption { text: root.t("System details are collected over SSH using Fastfetch.") }
+                                }
+                                Rule { title: root.t("Collection"); trailing: root.t("cached locally") }
+                                GridLayout {
+                                    Layout.fillWidth: true
+                                    columns: root.wide ? 2 : 1
+                                    columnSpacing: Style.space(12)
+                                    rowSpacing: Style.space(8)
+                                    Caption {
+                                        Layout.fillWidth: true
+                                        text: root.t("Refresh mode")
+                                    }
+                                    Segmented {
+                                        Layout.fillWidth: !root.wide
+                                        enabled: !!root.systemHost && !root.busy
+                                        value: root.systemPolicy.mode
+                                        options: [{value: "view", label: root.t("On view")}, {value: "schedule", label: root.t("Scheduled")},
+                                                  {value: "manual", label: root.t("Manual")}]
+                                        onChanged: function(v) { root.saveSystemChange({mode: v}) }
+                                    }
                                 }
                                 Stepper {
                                     visible: root.systemPolicy.mode === "schedule"
@@ -2327,54 +2504,50 @@ Ui.Panel {
                                     value: String(root.systemPolicy.minutes)
                                     onChanged: function(v) { root.saveSystemChange({minutes: Number(v)}) }
                                 }
-                                Notice {
-                                    id: systemNotice
-                                    readonly property string installToken: root.systemResult ? root.systemResult.fastfetchInstallToken || "" : ""
-                                    visible: text !== ""
-                                    kind: "error"
-                                    text: installToken !== "" ? root.t("Fastfetch was not found on the remote host.")
-                                        : root.systemResult ? root.systemResult.error || "" : ""
-                                    IconAction {
-                                        visible: systemNotice.installToken !== ""
-                                        enabled: !root.busy && !root.systemLoading
-                                        iconText: "󰇚"
-                                        tooltipText: root.t("Install Fastfetch on the remote host")
-                                        onClicked: root.call({op: "installFastfetch", id: root.systemHostId,
-                                                              token: systemNotice.installToken})
-                                    }
+                                Rule {
+                                    title: root.t("Show in host card")
+                                    trailing: root.t("%1 of %2").arg(root.systemHost ? root.cardFields(root.systemHost).length : 0).arg(root.systemFieldNames.length)
                                 }
-                                Caption {
-                                    visible: root.systemResult !== null && !!root.systemResult.fetchedAt
-                                    text: root.systemResult && root.systemResult.fetchedAt
-                                        ? root.t("Fetched at %1").arg(Qt.formatDateTime(new Date(root.systemResult.fetchedAt), "yyyy-MM-dd hh:mm:ss")) : ""
-                                }
-                                Rule { title: root.t("Show in host card") }
-                                Repeater {
-                                    model: root.systemFieldNames
-                                    CheckRow {
-                                        id: systemField
-                                        required property string modelData
-                                        enabled: !!root.systemHost && !root.busy
-                                        checked: root.cardFields(root.systemHost).indexOf(modelData) >= 0
-                                        text: root.systemFieldLabel(modelData)
-                                        detail: root.systemRows(root.systemResult, [modelData]).map(row =>
-                                            modelData === "disk" ? row.label + ": " + row.value : row.value).join("\n")
-                                        privateDetail: root.addressesHidden && (modelData === "host" || modelData === "disk")
-                                        onToggled: {
-                                            const fields = root.cardFields(root.systemHost)
-                                            root.saveSystemChange({fields: root.systemFieldNames.filter(f =>
-                                                f === modelData ? !checked : fields.indexOf(f) >= 0)})
+                                Flow {
+                                    Layout.fillWidth: true
+                                    spacing: Style.space(6)
+                                    Repeater {
+                                        model: root.systemFieldNames
+                                        Action {
+                                            required property string modelData
+                                            readonly property bool on: root.systemHost !== null && root.cardFields(root.systemHost).indexOf(modelData) >= 0
+                                            enabled: !!root.systemHost && !root.busy
+                                            iconText: on ? "󰄬" : "󰐕"
+                                            text: root.systemFieldLabel(modelData)
+                                            bordered: true
+                                            selected: on
+                                            onClicked: {
+                                                const fields = root.cardFields(root.systemHost)
+                                                root.saveSystemChange({fields: root.systemFieldNames.filter(f =>
+                                                    f === modelData ? !on : fields.indexOf(f) >= 0)})
+                                            }
                                         }
                                     }
                                 }
-                                Action {
-                                    visible: root.systemPolicy.fields !== null
-                                    enabled: !root.busy
-                                    text: root.t("Use global field settings")
-                                    onClicked: root.saveSystemChange({fields: null})
+                                RowLayout {
+                                    Layout.fillWidth: true
+                                    spacing: Style.space(8)
+                                    Action {
+                                        iconText: "󰒃"
+                                        text: root.t("Verify host key")
+                                        bordered: true
+                                        enabled: root.systemHost !== null && !root.busy
+                                        onClicked: root.inspectHostKey(root.systemHostId)
+                                    }
+                                    Action {
+                                        visible: root.systemPolicy.fields !== null
+                                        enabled: !root.busy
+                                        text: root.t("Use global field settings")
+                                        onClicked: root.saveSystemChange({fields: null})
+                                    }
+                                    Item { Layout.fillWidth: true }
                                 }
                                 InfoLine { text: root.t("The last successful snapshot is stored locally.") }
-
                             }
                         }
                     }
@@ -2962,16 +3135,26 @@ Ui.Panel {
                                 }
                                 ColumnLayout {
                                     Layout.fillWidth: true
-                                    spacing: Style.space(6)
-                                    Rule { title: root.t("System details") }
+                                    spacing: Style.space(8)
+                                    Rule {
+                                        title: root.t("System details")
+                                        trailing: root.t("%1 of %2").arg(root.systemFieldsDraft.length).arg(root.systemFieldNames.length)
+                                    }
                                     Caption { text: root.t("Default fields for host cards. Each host can override this selection.") }
-                                    Repeater {
-                                        model: root.systemFieldNames
-                                        CheckRow {
-                                            required property string modelData
-                                            checked: root.systemFieldsDraft.indexOf(modelData) >= 0
-                                            text: root.systemFieldLabel(modelData)
-                                            onToggled: root.toggleSystemField(modelData)
+                                    Flow {
+                                        Layout.fillWidth: true
+                                        spacing: Style.space(6)
+                                        Repeater {
+                                            model: root.systemFieldNames
+                                            Action {
+                                                required property string modelData
+                                                readonly property bool on: root.systemFieldsDraft.indexOf(modelData) >= 0
+                                                iconText: on ? "󰄬" : "󰐕"
+                                                text: root.systemFieldLabel(modelData)
+                                                bordered: true
+                                                selected: on
+                                                onClicked: root.toggleSystemField(modelData)
+                                            }
                                         }
                                     }
                                 }
@@ -4393,7 +4576,12 @@ Ui.Panel {
                 MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: root.copyEndpoint(dock.d) }
             }
             IconAction { iconText: "󰏫"; tooltipText: root.t("Edit host") + "  E"; onClicked: root.editDevice(dock.d) }
-            IconAction { iconText: "󰋼"; tooltipText: root.t("System details"); onClicked: root.openSystem(dock.d) }
+            IconAction {
+                iconText: "󰋼"
+                active: root.dockMode === "system"
+                tooltipText: root.t("System details") + "  I"
+                onClicked: root.dockMode = root.dockMode === "system" ? "" : "system"
+            }
             IconAction {
                 id: moreButton
                 iconText: "󰇘"
@@ -4526,6 +4714,140 @@ Ui.Panel {
                 }
             }
         }
+        ColumnLayout {
+            id: dockSystem
+            visible: root.dockMode === "system" && dock.d !== null
+            readonly property var info: root.matchingSystemInfo(dock.d)
+            readonly property bool loading: dock.d !== null && State.SystemState.collecting(dock.d.id)
+            readonly property bool hasData: info !== null && !!info.fields
+            readonly property string installToken: info ? info.fastfetchInstallToken || "" : ""
+            readonly property string errorText: info ? info.error || "" : ""
+            readonly property var fields: dock.d ? root.cardFields(dock.d) : []
+            readonly property var primaryDisk: root.systemPrimaryDisk(info)
+            readonly property var mem: info && info.fields ? info.fields.memory : null
+            Layout.fillWidth: true
+            spacing: Style.space(6)
+            Rectangle {
+                Layout.fillWidth: true
+                implicitHeight: dockSysCol.implicitHeight + Style.space(20)
+                color: root.tint
+                border.width: 1
+                border.color: root.rule
+                radius: Style.cornerRadius
+                SystemSweepLine {
+                    visible: dockSystem.loading
+                    anchors.top: parent.top
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                }
+                ColumnLayout {
+                    id: dockSysCol
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.verticalCenter: parent.verticalCenter
+                    anchors.leftMargin: Style.space(12)
+                    anchors.rightMargin: Style.space(12)
+                    spacing: Style.space(8)
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: Style.space(6)
+                        Caption {
+                            Layout.fillWidth: true
+                            Layout.minimumWidth: 0
+                            text: (root.t("System") + (dock.d ? " · " + dock.d.name : "")).toUpperCase()
+                            font.bold: true
+                            font.letterSpacing: 1.2
+                            wrapMode: Text.NoWrap
+                            elide: Text.ElideRight
+                        }
+                        Caption {
+                            Layout.fillWidth: false
+                            visible: text !== ""
+                            text: dockSystem.loading ? root.t("refreshing…") : root.systemAge(dockSystem.info)
+                            color: dockSystem.loading ? Commons.Color.accent : root.faintText
+                            wrapMode: Text.NoWrap
+                        }
+                        IconAction {
+                            size: Style.space(22)
+                            iconText: dockSystem.loading ? "" : "󰑐"
+                            spinning: dockSystem.loading
+                            enabled: dock.d !== null && !dockSystem.loading && !root.busy
+                            tooltipText: root.t("Refresh system details")
+                            onClicked: root.refreshSystemHost(dock.d)
+                        }
+                        IconAction {
+                            size: Style.space(22)
+                            iconText: "󰒓"
+                            enabled: dock.d !== null
+                            tooltipText: root.t("System settings")
+                            onClicked: { root.dockMode = ""; root.openSystem(dock.d) }
+                        }
+                    }
+                    Notice {
+                        visible: dockSystem.installToken !== "" || dockSystem.errorText !== ""
+                        kind: "error"
+                        text: dockSystem.installToken !== "" ? root.t("Fastfetch was not found on the remote host.") : dockSystem.errorText
+                        Action {
+                            visible: dockSystem.installToken !== ""
+                            iconText: "󰇚"
+                            text: root.t("Install Fastfetch")
+                            bordered: true
+                            enabled: !root.busy && !dockSystem.loading
+                            onClicked: root.installFastfetch(dock.d.id, dockSystem.installToken)
+                        }
+                        IconAction {
+                            size: Style.space(26)
+                            iconText: dockSystem.loading ? "" : "󰑐"
+                            spinning: dockSystem.loading
+                            enabled: dock.d !== null && !dockSystem.loading && !root.busy
+                            tooltipText: root.t("Refresh system details")
+                            onClicked: root.refreshSystemHost(dock.d)
+                        }
+                    }
+                    RowLayout {
+                        visible: !dockSystem.hasData && dockSystem.installToken === "" && dockSystem.errorText === ""
+                        Layout.fillWidth: true
+                        spacing: Style.space(8)
+                        Spinner { visible: dockSystem.loading }
+                        Caption {
+                            text: dockSystem.loading ? root.t("Collecting system details…") : root.t("System details not collected yet")
+                        }
+                        Action {
+                            visible: !dockSystem.loading
+                            iconText: "󰑐"
+                            text: root.t("Fetch now")
+                            bordered: true
+                            enabled: !root.busy
+                            onClicked: root.refreshSystemHost(dock.d)
+                        }
+                    }
+                    SystemSpecTable {
+                        visible: dockSystem.hasData && rows.length > 0
+                        flat: true
+                        rows: root.systemSpecRows(dockSystem.info, dockSystem.fields)
+                    }
+                    RowLayout {
+                        visible: dockSystem.hasData && (dockSystem.fields.indexOf("memory") >= 0 || dockSystem.fields.indexOf("disk") >= 0)
+                        Layout.fillWidth: true
+                        spacing: Style.space(12)
+                        SystemGaugeInline {
+                            visible: dockSystem.fields.indexOf("memory") >= 0
+                            label: root.t("Memory")
+                            valueText: root.compactUsageText(dockSystem.mem)
+                            percent: root.usagePercent(dockSystem.mem)
+                        }
+                        SystemGaugeInline {
+                            visible: dockSystem.fields.indexOf("disk") >= 0
+                            label: root.t("Disk")
+                            mount: dockSystem.primaryDisk ? dockSystem.primaryDisk.mountpoint : ""
+                            valueText: root.compactUsageText(dockSystem.primaryDisk)
+                            percent: root.usagePercent(dockSystem.primaryDisk)
+                            blurred: true
+                        }
+                    }
+                }
+            }
+        }
         RowLayout {
             visible: root.dockMode === ""
             Layout.fillWidth: true
@@ -4570,6 +4892,8 @@ Ui.Panel {
         readonly property bool down: d !== null && root.unreachable(d)
         readonly property string mount: root.matchingSftpState(d)
         readonly property var systemInfo: root.matchingSystemInfo(d)
+        property bool systemExpanded: false
+        onDChanged: systemExpanded = false
 
         EmptyState {
             visible: root.loaded && root.profiles.devices.length === 0
@@ -4668,13 +4992,22 @@ Ui.Panel {
                     }
                 }
             }
-            RowLayout {
+            ColumnLayout {
                 Layout.fillWidth: true
                 spacing: Style.space(2)
-                Fact { label: "Ping"; value: root.pingText(detail.d); kind: root.statusKind(detail.d) === "pending" ? "pending" : (root.matchingStatus(detail.d) ? (root.matchingStatus(detail.d).ping === "ok" ? "online" : "offline") : "unknown"); tooltipText: root.statusDetails(detail.d) }
-                Fact { label: root.t("SSH port"); value: root.portText(detail.d); kind: root.statusKind(detail.d) === "pending" ? "pending" : (root.matchingStatus(detail.d) ? (root.matchingStatus(detail.d).ssh === "open" ? "online" : "offline") : "unknown"); tooltipText: root.statusDetails(detail.d) }
-                Fact { label: root.t("Auth"); value: root.authText(detail.d); kind: "degraded"; blurred: detail.d !== null && detail.d.keyPath !== "" }
-                Fact { label: "SFTP"; value: root.sftpText(detail.d); kind: detail.mount === "mounted" ? "online" : detail.mount === "foreign" ? "offline" : "unknown" }
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: Style.space(2)
+                    Fact { label: "Ping"; value: root.pingText(detail.d); kind: root.statusKind(detail.d) === "pending" ? "pending" : (root.matchingStatus(detail.d) ? (root.matchingStatus(detail.d).ping === "ok" ? "online" : "offline") : "unknown"); tooltipText: root.statusDetails(detail.d) }
+                    Fact { label: root.t("SSH port"); value: root.portText(detail.d); kind: root.statusKind(detail.d) === "pending" ? "pending" : (root.matchingStatus(detail.d) ? (root.matchingStatus(detail.d).ssh === "open" ? "online" : "offline") : "unknown"); tooltipText: root.statusDetails(detail.d) }
+                    Fact { label: root.t("Auth"); value: root.authText(detail.d); kind: "degraded"; blurred: detail.d !== null && detail.d.keyPath !== "" }
+                    Fact { label: "SFTP"; value: root.sftpText(detail.d); kind: detail.mount === "mounted" ? "online" : detail.mount === "foreign" ? "offline" : "unknown" }
+                }
+                SystemVitals {
+                    d: detail.d
+                    expanded: detail.systemExpanded
+                    onToggled: detail.systemExpanded = !detail.systemExpanded
+                }
             }
             Notice {
                 visible: detail.down
@@ -4711,34 +5044,6 @@ Ui.Panel {
                         subtitle: enabled ? "Remote-SSH" : root.t("Needs a key or SSH agent")
                         tooltipText: enabled ? "" : root.t("VS Code needs a key or SSH agent: Remote-SSH cannot use a saved password.")
                         onClicked: root.launchDevice(detail.d.id, "vscode")
-                    }
-                }
-                RowLayout {
-                    Layout.fillWidth: true
-                    Action { iconText: "󰋼"; text: root.t("System details"); onClicked: root.openSystem(detail.d) }
-                    Caption {
-                        text: detail.systemInfo && detail.systemInfo.fields
-                            ? root.t("Fetched at %1").arg(Qt.formatDateTime(new Date(detail.systemInfo.fetchedAt), "yyyy-MM-dd hh:mm:ss")) : root.t("Not collected yet")
-                    }
-                }
-                Caption {
-                    visible: !!detail.systemInfo && !!detail.systemInfo.fields
-                        && root.cardFields(detail.d).length === 0
-                    text: root.t("All system fields are hidden. Choose fields in Settings.")
-                }
-                ColumnLayout {
-                    visible: systemSummary.count > 0
-                    Layout.fillWidth: true
-                    spacing: Style.space(4)
-                    Repeater {
-                        id: systemSummary
-                        model: root.systemRows(detail.systemInfo, root.cardFields(detail.d))
-                        Caption {
-                            required property var modelData
-                            text: modelData.label + ": " + modelData.value
-                            layer.enabled: root.addressesHidden && modelData.sensitive
-                            layer.effect: PrivacyBlur {}
-                        }
                     }
                 }
                 RowLayout {
@@ -4905,6 +5210,732 @@ Ui.Panel {
                     elide: Text.ElideRight
                     layer.enabled: fact.blurred && root.addressesHidden && visible
                     layer.effect: PrivacyBlur {}
+                }
+            }
+        }
+    }
+    component SystemGaugeBar: Rectangle {
+        id: gaugeBar
+        property int percent: -1
+        readonly property int clamped: Math.max(0, Math.min(100, percent))
+        Layout.fillWidth: true
+        implicitHeight: Style.space(2)
+        radius: Style.cornerRadius
+        color: root.rule
+        Rectangle {
+            visible: gaugeBar.percent >= 0
+            height: parent.height
+            width: gaugeBar.clamped > 0 ? Math.max(Style.space(2), Math.round(parent.width * gaugeBar.clamped / 100)) : 0
+            radius: Style.cornerRadius
+            color: gaugeBar.clamped >= 85 ? Commons.Color.urgent : Commons.Color.accent
+        }
+    }
+    component SystemSweepLine: Rectangle {
+        id: sweepLine
+        property real phase: 0
+        Layout.fillWidth: true
+        implicitHeight: 1
+        clip: true
+        color: root.rule
+        SequentialAnimation on phase {
+            running: sweepLine.visible && !Style.reduceMotion
+            loops: Animation.Infinite
+            NumberAnimation { from: 0; to: 1; duration: Style.duration(900); easing.type: Easing.InOutSine }
+            NumberAnimation { from: 1; to: 0; duration: Style.duration(900); easing.type: Easing.InOutSine }
+        }
+        Rectangle {
+            height: parent.height
+            width: Math.max(Style.space(48), Math.round(parent.width * 0.35))
+            x: Math.round(sweepLine.phase * Math.max(0, parent.width - width))
+            color: Commons.Color.accent
+        }
+    }
+    component SystemGaugeCell: Rectangle {
+        id: gaugeCell
+        property string label: ""
+        property string mount: ""
+        property string badge: ""
+        property string valueText: ""
+        property int percent: -1
+        property bool blurred: false
+        property string tooltipText: ""
+        property bool clickable: false
+        signal clicked()
+        Layout.fillWidth: true
+        Layout.fillHeight: true
+        Layout.minimumWidth: 0
+        Layout.preferredWidth: 1
+        implicitHeight: Math.max(Style.space(62), gaugeCol.implicitHeight + Style.space(18))
+        clip: true
+        color: gaugeCell.clickable && gaugeMouse.containsMouse
+            ? Style.hoverFillFor(Commons.Color.foreground, Commons.Color.accent) : root.tint
+        radius: Style.cornerRadius
+        MouseArea {
+            id: gaugeMouse
+            anchors.fill: parent
+            hoverEnabled: gaugeCell.clickable || gaugeCell.tooltipText !== ""
+            cursorShape: gaugeCell.clickable ? Qt.PointingHandCursor : Qt.ArrowCursor
+            onClicked: if (gaugeCell.clickable) gaugeCell.clicked()
+        }
+        Ui.PanelToolTip { visible: gaugeCell.tooltipText !== "" && gaugeMouse.containsMouse; text: gaugeCell.tooltipText }
+        ColumnLayout {
+            id: gaugeCol
+            anchors.fill: parent
+            anchors.topMargin: Style.space(8)
+            anchors.bottomMargin: Style.space(10)
+            anchors.leftMargin: Style.space(10)
+            anchors.rightMargin: Style.space(10)
+            spacing: Style.space(4)
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: Style.space(4)
+                Caption {
+                    Layout.fillWidth: false
+                    text: gaugeCell.label.toUpperCase()
+                    font.bold: true
+                    font.letterSpacing: 1.2
+                    wrapMode: Text.NoWrap
+                }
+                Caption {
+                    visible: gaugeCell.mount !== ""
+                    Layout.fillWidth: true
+                    text: gaugeCell.mount
+                    wrapMode: Text.NoWrap
+                    elide: Text.ElideMiddle
+                    layer.enabled: gaugeCell.blurred && root.addressesHidden && visible
+                    layer.effect: PrivacyBlur {}
+                }
+                Caption {
+                    visible: gaugeCell.badge !== ""
+                    Layout.fillWidth: false
+                    text: gaugeCell.badge
+                    color: root.faintText
+                    wrapMode: Text.NoWrap
+                }
+                Item { visible: gaugeCell.mount === ""; Layout.fillWidth: true }
+                Caption {
+                    Layout.fillWidth: false
+                    text: gaugeCell.percent >= 0 ? gaugeCell.percent + "%" : "—"
+                    font.bold: true
+                    color: gaugeCell.percent >= 85 ? Commons.Color.urgent
+                        : (gaugeCell.percent >= 0 ? Commons.Color.accent : root.faintText)
+                    wrapMode: Text.NoWrap
+                }
+            }
+            Item { Layout.fillHeight: true }
+            Label {
+                Layout.fillWidth: true
+                text: gaugeCell.valueText
+                font.bold: true
+                font.pixelSize: Style.font.bodySmall
+                wrapMode: Text.NoWrap
+                elide: Text.ElideRight
+                layer.enabled: gaugeCell.blurred && root.addressesHidden && visible
+                layer.effect: PrivacyBlur {}
+            }
+            SystemGaugeBar { percent: gaugeCell.percent }
+        }
+    }
+    component SystemGaugeInline: ColumnLayout {
+        id: gaugeInline
+        property string label: ""
+        property string mount: ""
+        property string valueText: ""
+        property int percent: -1
+        property bool blurred: false
+        Layout.fillWidth: true
+        Layout.preferredWidth: 1
+        spacing: Style.space(4)
+        RowLayout {
+            Layout.fillWidth: true
+            spacing: Style.space(6)
+            Caption {
+                Layout.fillWidth: false
+                text: gaugeInline.label.toUpperCase()
+                font.bold: true
+                font.letterSpacing: 1.0
+                wrapMode: Text.NoWrap
+            }
+            Caption {
+                visible: gaugeInline.mount !== ""
+                Layout.fillWidth: true
+                text: gaugeInline.mount
+                wrapMode: Text.NoWrap
+                elide: Text.ElideMiddle
+                layer.enabled: gaugeInline.blurred && root.addressesHidden && visible
+                layer.effect: PrivacyBlur {}
+            }
+            Item { visible: gaugeInline.mount === ""; Layout.fillWidth: true }
+            Caption {
+                Layout.fillWidth: false
+                text: gaugeInline.valueText
+                color: Commons.Color.foreground
+                wrapMode: Text.NoWrap
+                layer.enabled: gaugeInline.blurred && root.addressesHidden && visible
+                layer.effect: PrivacyBlur {}
+            }
+            Caption {
+                Layout.fillWidth: false
+                text: gaugeInline.percent >= 0 ? gaugeInline.percent + "%" : "—"
+                font.bold: true
+                color: gaugeInline.percent >= 85 ? Commons.Color.urgent
+                    : (gaugeInline.percent >= 0 ? Commons.Color.accent : root.faintText)
+                wrapMode: Text.NoWrap
+            }
+        }
+        SystemGaugeBar { percent: gaugeInline.percent }
+    }
+    component SystemSpecTable: Rectangle {
+        id: specTable
+        property var rows: []
+        property bool flat: false
+        readonly property int labelWidth: Style.space(root.language === "ru" ? 86 : 64)
+        Layout.fillWidth: true
+        Layout.preferredWidth: 1
+        implicitHeight: specCol.implicitHeight + (flat ? 0 : Style.space(20))
+        color: flat ? "transparent" : root.tint
+        radius: Style.cornerRadius
+        ColumnLayout {
+            id: specCol
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.verticalCenter: parent.verticalCenter
+            anchors.leftMargin: specTable.flat ? 0 : Style.space(12)
+            anchors.rightMargin: specTable.flat ? 0 : Style.space(12)
+            spacing: Style.space(6)
+            Repeater {
+                model: specTable.rows
+                RowLayout {
+                    id: specRow
+                    required property var modelData
+                    Layout.fillWidth: true
+                    spacing: Style.space(10)
+                    Caption {
+                        Layout.fillWidth: false
+                        Layout.preferredWidth: specTable.labelWidth
+                        text: specRow.modelData.label.toUpperCase()
+                        color: root.faintText
+                        font.bold: true
+                        font.letterSpacing: 0.8
+                        wrapMode: Text.NoWrap
+                        elide: Text.ElideRight
+                    }
+                    Label {
+                        id: specVal
+                        Layout.fillWidth: true
+                        text: specRow.modelData.value
+                        font.pixelSize: Style.font.bodySmall
+                        color: specRow.modelData.available === false ? root.faintText : Commons.Color.foreground
+                        wrapMode: Text.NoWrap
+                        elide: Text.ElideRight
+                        layer.enabled: specRow.modelData.sensitive && root.addressesHidden && visible
+                        layer.effect: PrivacyBlur {}
+                        HoverHandler { id: specValHover }
+                        Ui.PanelToolTip {
+                            visible: specVal.truncated && specValHover.hovered && !(specRow.modelData.sensitive && root.addressesHidden)
+                            text: specRow.modelData.value
+                        }
+                    }
+                }
+            }
+        }
+    }
+    // Wide host card telemetry strip (Row 2 of Facts) + inline expandable drawer.
+    component SystemVitals: ColumnLayout {
+        id: systemVitals
+        property var d: null
+        property bool expanded: false
+        signal toggled()
+        readonly property var info: root.matchingSystemInfo(d)
+        readonly property bool loading: d !== null && State.SystemState.collecting(d.id)
+        readonly property var fields: d ? root.cardFields(d) : []
+        readonly property bool hasData: info !== null && !!info.fields
+        readonly property string installToken: info ? info.fastfetchInstallToken || "" : ""
+        readonly property string errorText: info ? info.error || "" : ""
+        readonly property bool allHidden: fields.length === 0
+        readonly property bool showMemory: fields.indexOf("memory") >= 0
+        readonly property bool showDisk: fields.indexOf("disk") >= 0
+        readonly property bool showIdentity: fields.some(f => f === "os" || f === "kernel" || f === "host" || f === "cpu")
+        readonly property int gaugeCount: (showMemory ? 1 : 0) + (showDisk ? 1 : 0)
+        readonly property var mem: info && info.fields ? info.fields.memory : null
+        readonly property var primaryDisk: root.systemPrimaryDisk(info)
+        readonly property var extraDisks: showDisk ? root.systemExtraDisks(info) : []
+        readonly property var specRows: root.systemSpecRows(info, fields)
+        readonly property var summary: root.systemIdentitySummary(info, fields)
+        readonly property bool twoColDrawer: specRows.length > 0 && extraDisks.length > 0
+        Layout.fillWidth: true
+        spacing: Style.space(2)
+
+        // All fields hidden on card
+        Rectangle {
+            visible: systemVitals.allHidden && systemVitals.d !== null
+            Layout.fillWidth: true
+            implicitHeight: Style.space(36)
+            color: root.tint
+            radius: Style.cornerRadius
+            RowLayout {
+                anchors.fill: parent
+                anchors.leftMargin: Style.space(12)
+                anchors.rightMargin: Style.space(8)
+                spacing: Style.space(8)
+                Caption { Layout.fillWidth: false; text: "󰋼"; font.pixelSize: Style.font.body; color: root.faintText }
+                Caption { text: root.t("All system fields are hidden"); wrapMode: Text.NoWrap; elide: Text.ElideRight }
+                Action {
+                    iconText: "󰒓"
+                    text: root.t("Configure")
+                    onClicked: root.openSystem(systemVitals.d)
+                }
+            }
+        }
+
+        // Fastfetch missing (no cached snapshot)
+        Notice {
+            visible: !systemVitals.allHidden && !systemVitals.hasData && systemVitals.installToken !== ""
+            kind: "error"
+            title: root.t("Fastfetch was not found on the remote host.")
+            text: root.t("Required for OS, CPU, memory, and disk details.")
+            Action {
+                iconText: "󰇚"
+                text: root.t("Install Fastfetch")
+                bordered: true
+                enabled: !root.busy && !systemVitals.loading
+                onClicked: root.installFastfetch(systemVitals.d.id, systemVitals.installToken)
+            }
+            IconAction {
+                size: Style.space(28)
+                iconText: systemVitals.loading ? "" : "󰑐"
+                spinning: systemVitals.loading
+                enabled: systemVitals.d !== null && !systemVitals.loading && !root.busy
+                tooltipText: root.t("Refresh system details")
+                onClicked: root.refreshSystemHost(systemVitals.d)
+            }
+        }
+
+        // Error without cached snapshot
+        Notice {
+            visible: !systemVitals.allHidden && !systemVitals.hasData && systemVitals.installToken === "" && systemVitals.errorText !== ""
+            kind: "error"
+            text: systemVitals.errorText
+            Action {
+                iconText: "󰑐"
+                text: root.t("Retry")
+                bordered: true
+                enabled: !root.busy && !systemVitals.loading
+                onClicked: root.refreshSystemHost(systemVitals.d)
+            }
+        }
+
+        // Not collected yet (or first collection in flight)
+        Rectangle {
+            visible: !systemVitals.allHidden && !systemVitals.hasData && systemVitals.installToken === "" && systemVitals.errorText === ""
+            Layout.fillWidth: true
+            implicitHeight: Style.space(40)
+            color: root.tint
+            radius: Style.cornerRadius
+            SystemSweepLine {
+                visible: systemVitals.loading
+                anchors.top: parent.top
+                anchors.left: parent.left
+                anchors.right: parent.right
+            }
+            RowLayout {
+                anchors.fill: parent
+                anchors.leftMargin: Style.space(12)
+                anchors.rightMargin: Style.space(8)
+                spacing: Style.space(8)
+                Spinner { visible: systemVitals.loading }
+                Caption { visible: !systemVitals.loading; Layout.fillWidth: false; text: "󰋼"; font.pixelSize: Style.font.body; color: root.faintText }
+                Caption {
+                    text: systemVitals.loading ? root.t("Collecting system details…") : root.t("System details not collected yet")
+                    wrapMode: Text.NoWrap
+                    elide: Text.ElideRight
+                }
+                Action {
+                    visible: !systemVitals.loading
+                    iconText: "󰑐"
+                    text: root.t("Fetch now")
+                    bordered: true
+                    enabled: systemVitals.d !== null && !root.busy
+                    onClicked: root.refreshSystemHost(systemVitals.d)
+                }
+                IconAction {
+                    size: Style.space(24)
+                    iconText: "󰒓"
+                    enabled: systemVitals.d !== null
+                    tooltipText: root.t("System settings")
+                    onClicked: root.openSystem(systemVitals.d)
+                }
+            }
+        }
+
+        // Loaded Vitals Strip (grid-aligned to the 4 Fact columns above)
+        Item {
+            id: vitalsBar
+            visible: !systemVitals.allHidden && systemVitals.hasData
+            Layout.fillWidth: true
+            implicitHeight: vitalsRow.implicitHeight
+            readonly property int unitWidth: Math.max(Style.space(110), Math.floor((width - Style.space(2) * 3) / 4))
+
+            RowLayout {
+                id: vitalsRow
+                anchors.left: parent.left
+                anchors.right: parent.right
+                spacing: Style.space(2)
+
+                // Identity cell (aligns beneath PING + SSH PORT when both gauges shown)
+                Rectangle {
+                    id: sysCell
+                    property bool refreshHovered: false
+                    visible: systemVitals.showIdentity
+                    Layout.fillWidth: true
+                    Layout.fillHeight: true
+                    Layout.minimumWidth: 0
+                    Layout.preferredWidth: systemVitals.gaugeCount === 2 ? vitalsBar.unitWidth * 2 + Style.space(2) : 1
+                    implicitHeight: Math.max(Style.space(62), sysCellCol.implicitHeight + Style.space(16))
+                    clip: true
+                    color: systemVitals.expanded || sysMouse.containsMouse
+                        ? Style.hoverFillFor(Commons.Color.foreground, Commons.Color.accent) : root.tint
+                    radius: Style.cornerRadius
+                    MouseArea {
+                        id: sysMouse
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: systemVitals.toggled()
+                    }
+                    Ui.PanelToolTip {
+                        visible: sysMouse.containsMouse && !sysCell.refreshHovered && !ageHover.hovered
+                        text: systemVitals.expanded ? root.t("Hide extra system details") : root.t("Show more system details")
+                    }
+                    ColumnLayout {
+                        id: sysCellCol
+                        anchors.fill: parent
+                        anchors.topMargin: Style.space(7)
+                        anchors.bottomMargin: Style.space(9)
+                        anchors.leftMargin: Style.space(12)
+                        anchors.rightMargin: Style.space(10)
+                        spacing: Style.space(3)
+                        RowLayout {
+                            Layout.fillWidth: true
+                            Layout.minimumWidth: 0
+                            spacing: Style.space(5)
+                            Caption {
+                                Layout.fillWidth: false
+                                text: root.t("System").toUpperCase()
+                                font.bold: true
+                                font.letterSpacing: 1.6
+                                wrapMode: Text.NoWrap
+                            }
+                            Item { Layout.fillWidth: true; Layout.minimumWidth: 0 }
+                            Caption {
+                                Layout.fillWidth: false
+                                text: systemVitals.loading ? root.t("refreshing…") : root.systemAge(systemVitals.info)
+                                color: systemVitals.loading ? Commons.Color.accent : root.faintText
+                                wrapMode: Text.NoWrap
+                                HoverHandler { id: ageHover }
+                                Ui.PanelToolTip {
+                                    visible: ageHover.hovered && root.systemFetchedTooltip(systemVitals.info) !== ""
+                                    text: root.systemFetchedTooltip(systemVitals.info)
+                                }
+                            }
+                            IconAction {
+                                id: sysRefreshBtn
+                                size: Style.space(22)
+                                iconText: systemVitals.loading ? "" : "󰑐"
+                                spinning: systemVitals.loading
+                                enabled: systemVitals.d !== null && !systemVitals.loading && !root.busy
+                                tooltipText: root.t("Refresh system details")
+                                onHovered: function(isHovered) { sysCell.refreshHovered = isHovered }
+                                onClicked: root.refreshSystemHost(systemVitals.d)
+                            }
+                            Text {
+                                Layout.fillWidth: false
+                                textFormat: Text.PlainText
+                                text: systemVitals.expanded ? "⌄" : "›"
+                                color: systemVitals.expanded ? Commons.Color.accent : root.secondaryText
+                                font.family: Style.font.family
+                                font.pixelSize: Style.font.body
+                                font.bold: true
+                            }
+                        }
+                        Item { Layout.fillHeight: true }
+                        Label {
+                            Layout.fillWidth: true
+                            Layout.minimumWidth: 0
+                            text: systemVitals.summary.primary.text
+                            font.bold: true
+                            wrapMode: Text.NoWrap
+                            elide: Text.ElideRight
+                            layer.enabled: systemVitals.summary.primary.sensitive && root.addressesHidden && visible
+                            layer.effect: PrivacyBlur {}
+                        }
+                        RowLayout {
+                            visible: systemVitals.summary.subParts.length > 0
+                            Layout.fillWidth: true
+                            Layout.minimumWidth: 0
+                            spacing: Style.space(5)
+                            Repeater {
+                                model: systemVitals.summary.subParts
+                                RowLayout {
+                                    id: subPartRow
+                                    required property var modelData
+                                    required property int index
+                                    Layout.fillWidth: true
+                                    Layout.minimumWidth: 0
+                                    Layout.preferredWidth: index === 0 ? 3 : 2
+                                    spacing: Style.space(5)
+                                    Caption {
+                                        visible: subPartRow.index > 0
+                                        Layout.fillWidth: false
+                                        text: "·"
+                                        color: root.faintText
+                                        wrapMode: Text.NoWrap
+                                    }
+                                    Caption {
+                                        Layout.fillWidth: true
+                                        Layout.minimumWidth: 0
+                                        text: subPartRow.modelData.text
+                                        wrapMode: Text.NoWrap
+                                        elide: Text.ElideRight
+                                        layer.enabled: subPartRow.modelData.sensitive && root.addressesHidden && visible
+                                        layer.effect: PrivacyBlur {}
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Memory gauge (aligns beneath AUTH when both gauges shown)
+                SystemGaugeCell {
+                    visible: systemVitals.showMemory
+                    Layout.fillWidth: !(systemVitals.showIdentity && systemVitals.gaugeCount === 2)
+                    Layout.preferredWidth: systemVitals.showIdentity && systemVitals.gaugeCount === 2 ? vitalsBar.unitWidth : 1
+                    label: root.t("Memory")
+                    valueText: root.compactUsageText(systemVitals.mem)
+                    percent: root.usagePercent(systemVitals.mem)
+                    clickable: true
+                    tooltipText: systemVitals.expanded ? root.t("Hide extra system details") : root.t("Show more system details")
+                    onClicked: systemVitals.toggled()
+                }
+
+                // Primary disk gauge (aligns beneath SFTP when both gauges shown)
+                SystemGaugeCell {
+                    visible: systemVitals.showDisk
+                    Layout.fillWidth: !(systemVitals.showIdentity && systemVitals.gaugeCount === 2)
+                    Layout.preferredWidth: systemVitals.showIdentity && systemVitals.gaugeCount === 2 ? vitalsBar.unitWidth : 1
+                    label: root.t("Disk")
+                    mount: systemVitals.primaryDisk ? systemVitals.primaryDisk.mountpoint : ""
+                    badge: systemVitals.extraDisks.length > 0 ? "+" + systemVitals.extraDisks.length : ""
+                    valueText: root.compactUsageText(systemVitals.primaryDisk)
+                    percent: root.usagePercent(systemVitals.primaryDisk)
+                    blurred: true
+                    clickable: true
+                    tooltipText: systemVitals.expanded ? root.t("Hide extra system details") : root.t("Show more system details")
+                    onClicked: systemVitals.toggled()
+                }
+
+                // Utility rail when user hid all 4 text fields and left only gauges
+                Rectangle {
+                    visible: !systemVitals.showIdentity && systemVitals.gaugeCount > 0
+                    Layout.fillHeight: true
+                    Layout.preferredWidth: Style.space(32)
+                    color: root.tint
+                    radius: Style.cornerRadius
+                    ColumnLayout {
+                        anchors.centerIn: parent
+                        spacing: Style.space(2)
+                        IconAction {
+                            size: Style.space(24)
+                            iconText: systemVitals.loading ? "" : "󰑐"
+                            spinning: systemVitals.loading
+                            enabled: systemVitals.d !== null && !systemVitals.loading && !root.busy
+                            tooltipText: root.t("Refresh system details")
+                            onClicked: root.refreshSystemHost(systemVitals.d)
+                        }
+                        IconAction {
+                            size: Style.space(24)
+                            iconText: "󰒓"
+                            enabled: systemVitals.d !== null
+                            tooltipText: root.t("System settings")
+                            onClicked: root.openSystem(systemVitals.d)
+                        }
+                    }
+                }
+            }
+
+            // Stale-while-revalidate 1px accent sweep overlaid on top edge
+            SystemSweepLine {
+                visible: systemVitals.loading
+                anchors.top: parent.top
+                anchors.left: parent.left
+                anchors.right: parent.right
+            }
+        }
+
+        // Stale refresh error banner (keeps cached metrics visible above)
+        Notice {
+            visible: !systemVitals.allHidden && systemVitals.hasData && (systemVitals.errorText !== "" || systemVitals.installToken !== "")
+            kind: "error"
+            text: systemVitals.installToken !== "" ? root.t("Fastfetch was not found on the remote host.") : systemVitals.errorText
+            Action {
+                visible: systemVitals.installToken !== ""
+                iconText: "󰇚"
+                text: root.t("Install Fastfetch")
+                bordered: true
+                enabled: !root.busy && !systemVitals.loading
+                onClicked: root.installFastfetch(systemVitals.d.id, systemVitals.installToken)
+            }
+            Action {
+                visible: systemVitals.installToken === ""
+                iconText: "󰑐"
+                text: root.t("Retry")
+                bordered: true
+                enabled: !root.busy && !systemVitals.loading
+                onClicked: root.refreshSystemHost(systemVitals.d)
+            }
+            IconAction {
+                visible: systemVitals.installToken !== ""
+                size: Style.space(26)
+                iconText: systemVitals.loading ? "" : "󰑐"
+                spinning: systemVitals.loading
+                enabled: systemVitals.d !== null && !systemVitals.loading && !root.busy
+                tooltipText: root.t("Refresh system details")
+                onClicked: root.refreshSystemHost(systemVitals.d)
+            }
+        }
+
+        // Expanded inline drawer (A+): 2-col when extra disks exist, single full-width card otherwise
+        RowLayout {
+            visible: !systemVitals.allHidden && systemVitals.hasData && systemVitals.expanded && systemVitals.twoColDrawer
+            Layout.minimumHeight: implicitHeight
+            Layout.fillWidth: true
+            spacing: Style.space(2)
+            SystemSpecTable {
+                Layout.fillHeight: true
+                rows: systemVitals.specRows
+            }
+            Rectangle {
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                Layout.preferredWidth: 1
+                implicitHeight: drawerRightCol.implicitHeight + Style.space(20)
+                color: root.tint
+                radius: Style.cornerRadius
+                ColumnLayout {
+                    id: drawerRightCol
+                    anchors.fill: parent
+                    anchors.topMargin: Style.space(10)
+                    anchors.bottomMargin: Style.space(8)
+                    anchors.leftMargin: Style.space(12)
+                    anchors.rightMargin: Style.space(12)
+                    spacing: Style.space(8)
+                    Repeater {
+                        model: systemVitals.extraDisks.slice(0, 3)
+                        SystemGaugeInline {
+                            required property var modelData
+                            label: root.t("Disk")
+                            mount: modelData.mountpoint
+                            valueText: root.compactUsageText(modelData)
+                            percent: root.usagePercent(modelData)
+                            blurred: true
+                        }
+                    }
+                    Caption {
+                        visible: systemVitals.extraDisks.length > 3
+                        text: root.t("+%1 more").arg(systemVitals.extraDisks.length - 3) + "  ›"
+                        color: Commons.Color.accent
+                        font.bold: true
+                        MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: root.openSystem(systemVitals.d) }
+                    }
+                    Item { Layout.fillHeight: true }
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: Style.space(6)
+                        Caption {
+                            text: root.systemModeLabel(State.SystemState.pref(systemVitals.d).mode)
+                            color: root.faintText
+                            wrapMode: Text.NoWrap
+                            elide: Text.ElideRight
+                        }
+                        Action {
+                            iconText: "󰑐"
+                            text: root.t("Refresh")
+                            bordered: true
+                            enabled: systemVitals.d !== null && !systemVitals.loading && !root.busy
+                            onClicked: root.refreshSystemHost(systemVitals.d)
+                        }
+                        Action {
+                            iconText: "󰒓"
+                            text: root.t("Fields")
+                            bordered: true
+                            enabled: systemVitals.d !== null
+                            onClicked: root.openSystem(systemVitals.d)
+                        }
+                    }
+                }
+            }
+        }
+        Rectangle {
+            visible: !systemVitals.allHidden && systemVitals.hasData && systemVitals.expanded && !systemVitals.twoColDrawer
+            Layout.fillWidth: true
+            implicitHeight: drawerSingleCol.implicitHeight + Style.space(20)
+            color: root.tint
+            radius: Style.cornerRadius
+            ColumnLayout {
+                id: drawerSingleCol
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.verticalCenter: parent.verticalCenter
+                anchors.leftMargin: Style.space(12)
+                anchors.rightMargin: Style.space(12)
+                spacing: Style.space(8)
+                SystemSpecTable {
+                    visible: systemVitals.specRows.length > 0
+                    flat: true
+                    rows: systemVitals.specRows
+                }
+                Repeater {
+                    model: systemVitals.extraDisks.slice(0, 4)
+                    SystemGaugeInline {
+                        required property var modelData
+                        label: root.t("Disk")
+                        mount: modelData.mountpoint
+                        valueText: root.compactUsageText(modelData)
+                        percent: root.usagePercent(modelData)
+                        blurred: true
+                    }
+                }
+                Action {
+                    visible: systemVitals.extraDisks.length > 4
+                    text: root.t("+%1 more").arg(systemVitals.extraDisks.length - 4) + "  ›"
+                    onClicked: root.openSystem(systemVitals.d)
+                }
+                Rule {}
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: Style.space(8)
+                    Caption {
+                        text: root.systemModeLabel(State.SystemState.pref(systemVitals.d).mode)
+                            + (root.systemFetchedTooltip(systemVitals.info) !== "" ? " · " + root.systemFetchedTooltip(systemVitals.info) : "")
+                        color: root.faintText
+                        wrapMode: Text.NoWrap
+                        elide: Text.ElideRight
+                    }
+                    Action {
+                        iconText: "󰑐"
+                        text: root.t("Refresh")
+                        bordered: true
+                        enabled: systemVitals.d !== null && !systemVitals.loading && !root.busy
+                        onClicked: root.refreshSystemHost(systemVitals.d)
+                    }
+                    Action {
+                        iconText: "󰒓"
+                        text: root.t("Fields")
+                        bordered: true
+                        enabled: systemVitals.d !== null
+                        onClicked: root.openSystem(systemVitals.d)
+                    }
                 }
             }
         }
